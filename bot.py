@@ -42,9 +42,7 @@ SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
 
 OWNER_ID = os.getenv("OWNER_ID")
 
-PORT = int(
-    os.environ.get("PORT", 10000)
-)
+PORT = int(os.environ.get("PORT", 10000))
 
 MAX_MESSAGE_LENGTH = 3900
 
@@ -84,15 +82,10 @@ def get_supabase():
 # ПАМЯТЬ
 # =========================================================
 
-# Сообщения, которые пользователь отправил
-# до нажатия "Завершить ввод"
 user_buffers = {}
 
-# ID последнего сообщения бота
-# с кнопкой "Завершить ввод"
 user_last_control_message = {}
 
-# Последний готовый набор пользователя
 user_last_texts = {}
 
 
@@ -145,13 +138,10 @@ def initialize_passwords():
 
         existing = result.data or []
 
-        # Если пароли уже существуют —
-        # ничего не создаём.
         if len(existing) >= 10:
 
             print(
-                "Пароли уже существуют. "
-                "Новые не создаются."
+                "Пароли уже существуют."
             )
 
             return
@@ -210,10 +200,6 @@ def initialize_passwords():
             print(password)
 
         print("=" * 50)
-        print(
-            "СОХРАНИ ЭТИ ПАРОЛИ!"
-        )
-        print("=" * 50)
         print("")
 
     except Exception as error:
@@ -269,9 +255,7 @@ def is_authorized(telegram_id):
 # СОЗДАНИЕ ПОЛЬЗОВАТЕЛЯ
 # =========================================================
 
-def create_user_if_needed(
-    telegram_id
-):
+def create_user_if_needed(telegram_id):
 
     db = get_supabase()
 
@@ -315,10 +299,7 @@ def create_user_if_needed(
 # ПРОВЕРКА ПАРОЛЯ
 # =========================================================
 
-def use_password(
-    password,
-    telegram_id
-):
+def use_password(password, telegram_id):
 
     db = get_supabase()
 
@@ -344,48 +325,31 @@ def use_password(
         )
 
         if not result.data:
-
             return False, "wrong"
 
         row = result.data[0]
 
-        # Уже использован
         if row.get("used"):
-
             return False, "used"
-
-        # -------------------------------------------------
-        # Помечаем пароль использованным
-        # -------------------------------------------------
 
         db.table(
             "bot_passwords"
         ).update(
             {
-                "used":
-                    True,
-
-                "used_by":
-                    telegram_id,
-
-                "used_at":
-                    "now()",
+                "used": True,
+                "used_by": telegram_id,
+                "used_at": "now()",
             }
         ).eq(
             "id",
             row["id"]
         ).execute()
 
-        # -------------------------------------------------
-        # Авторизуем пользователя
-        # -------------------------------------------------
-
         db.table(
             "bot_users"
         ).update(
             {
-                "authorized":
-                    True
+                "authorized": True
             }
         ).eq(
             "telegram_id",
@@ -405,7 +369,7 @@ def use_password(
 
 
 # =========================================================
-# ПОЛУЧЕНИЕ СТАТИСТИКИ ПАРОЛЕЙ
+# СТАТИСТИКА ПАРОЛЕЙ
 # =========================================================
 
 def get_password_stats():
@@ -447,7 +411,7 @@ def get_password_stats():
 
 
 # =========================================================
-# ФОРМАТ ВЫВОДА ПАРОЛЕЙ ДЛЯ ВЛАДЕЛЬЦА
+# СПИСОК ПАРОЛЕЙ
 # =========================================================
 
 def make_password_list():
@@ -504,7 +468,7 @@ def make_password_list():
 
 
 # =========================================================
-# ПРОВЕРКА ВЛАДЕЛЬЦА
+# ВЛАДЕЛЕЦ
 # =========================================================
 
 def is_owner(telegram_id):
@@ -520,7 +484,82 @@ def is_owner(telegram_id):
 
 
 # =========================================================
-# КНОПКА "ЗАВЕРШИТЬ ВВОД"
+# ГЛАВНОЕ МЕНЮ
+# =========================================================
+
+def get_main_menu(user_id):
+
+    buttons = [
+
+        [
+            InlineKeyboardButton(
+                "📝 Начать ввод",
+                callback_data="menu_start"
+            )
+        ],
+
+        [
+            InlineKeyboardButton(
+                "📋 Последние ответы",
+                callback_data="menu_last"
+            )
+        ],
+
+        [
+            InlineKeyboardButton(
+                "🔄 Новый ввод",
+                callback_data="menu_new"
+            ),
+
+            InlineKeyboardButton(
+                "ℹ️ Помощь",
+                callback_data="menu_help"
+            )
+        ],
+    ]
+
+    # Кнопки владельца
+    if is_owner(user_id):
+
+        buttons.append(
+            [
+                InlineKeyboardButton(
+                    "🔐 Пароли",
+                    callback_data="menu_keys"
+                ),
+
+                InlineKeyboardButton(
+                    "📊 Статистика",
+                    callback_data="menu_stats"
+                )
+            ]
+        )
+
+    return InlineKeyboardMarkup(
+        buttons
+    )
+
+
+# =========================================================
+# КНОПКА НАЗАД
+# =========================================================
+
+def get_back_keyboard():
+
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    "🔙 Главное меню",
+                    callback_data="menu_main"
+                )
+            ]
+        ]
+    )
+
+
+# =========================================================
+# КНОПКА ЗАВЕРШИТЬ ВВОД
 # =========================================================
 
 def get_finish_keyboard():
@@ -570,6 +609,13 @@ def get_result_keyboard():
                 ),
             ],
 
+            [
+                InlineKeyboardButton(
+                    "🏠 Главное меню",
+                    callback_data="menu_main"
+                )
+            ]
+
         ]
     )
 
@@ -616,10 +662,6 @@ def parse_questions(text: str):
 
         answer = match.group(3).strip()
 
-        # -------------------------------------------------
-        # ОЧИСТКА ВОПРОСА
-        # -------------------------------------------------
-
         question = re.sub(
             r"\n\s*",
             " ",
@@ -633,10 +675,6 @@ def parse_questions(text: str):
         )
 
         question = question.strip()
-
-        # -------------------------------------------------
-        # ОЧИСТКА ОТВЕТА
-        # -------------------------------------------------
 
         answer = re.sub(
             r"Получил\s+сообщение\s*:?",
@@ -843,6 +881,147 @@ def make_compact(questions):
 
 
 # =========================================================
+# ГЛАВНОЕ МЕНЮ
+# =========================================================
+
+async def show_main_menu(
+    message,
+    user_id,
+    edit=False
+):
+
+    text = (
+        "🤖 <b>WORKBOT</b>\n\n"
+        "Добро пожаловать!\n\n"
+        "Выбери нужное действие:"
+    )
+
+    keyboard = get_main_menu(
+        user_id
+    )
+
+    if edit:
+
+        await message.edit_text(
+            text,
+            parse_mode="HTML",
+            reply_markup=keyboard
+        )
+
+    else:
+
+        await message.reply_text(
+            text,
+            parse_mode="HTML",
+            reply_markup=keyboard
+        )
+
+
+# =========================================================
+# ПОМОЩЬ
+# =========================================================
+
+async def show_help(
+    message,
+    edit=False
+):
+
+    text = (
+        "ℹ️ <b>Как пользоваться ботом</b>\n\n"
+
+        "1️⃣ Нажми <b>📝 Начать ввод</b>.\n\n"
+
+        "2️⃣ Отправь одно или несколько "
+        "сообщений с заданиями.\n\n"
+
+        "3️⃣ Когда закончишь отправлять "
+        "сообщения, нажми "
+        "<b>⏹ Завершить ввод</b>.\n\n"
+
+        "4️⃣ Бот соберёт все вопросы и "
+        "ответы в одно удобное сообщение.\n\n"
+
+        "После обработки можно выбрать "
+        "нужный формат отображения."
+    )
+
+    keyboard = get_back_keyboard()
+
+    if edit:
+
+        await message.edit_text(
+            text,
+            parse_mode="HTML",
+            reply_markup=keyboard
+        )
+
+    else:
+
+        await message.reply_text(
+            text,
+            parse_mode="HTML",
+            reply_markup=keyboard
+        )
+
+
+# =========================================================
+# НАЧАТЬ НОВЫЙ ВВОД
+# =========================================================
+
+async def start_input(
+    message,
+    user_id,
+    context
+):
+
+    # Полностью очищаем старый ввод
+    user_buffers[user_id] = []
+
+    old_message_id = (
+        user_last_control_message.get(
+            user_id
+        )
+    )
+
+    if old_message_id:
+
+        try:
+
+            await context.bot.edit_message_reply_markup(
+                chat_id=message.chat_id,
+                message_id=old_message_id,
+                reply_markup=None
+            )
+
+        except Exception:
+            pass
+
+    user_last_control_message.pop(
+        user_id,
+        None
+    )
+
+    text = (
+        "📝 <b>Режим ввода включён</b>\n\n"
+        "Теперь отправляй мне одно или "
+        "несколько сообщений с вопросами "
+        "и ответами.\n\n"
+        "Когда закончишь — нажми "
+        "<b>⏹ Завершить ввод</b>."
+    )
+
+    await message.edit_text(
+        text,
+        parse_mode="HTML",
+        reply_markup=get_finish_keyboard()
+    )
+
+    user_last_control_message[user_id] = (
+        message.message_id
+    )
+
+
+# =========================================================
 # /START
 # =========================================================
 
@@ -862,23 +1041,14 @@ async def start(
         user_id
     )
 
-    # -----------------------------------------------------
-    # Если пользователь уже авторизован
-    # -----------------------------------------------------
-
     if is_authorized(user_id):
 
-        await update.message.reply_text(
-            "✅ <b>Доступ разрешён!</b>\n\n"
-            "Можешь отправлять задания.",
-            parse_mode="HTML"
+        await show_main_menu(
+            update.message,
+            user_id
         )
 
         return
-
-    # -----------------------------------------------------
-    # Новый пользователь
-    # -----------------------------------------------------
 
     await update.message.reply_text(
         "🔐 <b>Требуется пароль</b>\n\n"
@@ -941,6 +1111,45 @@ async def keys_command(
 
 
 # =========================================================
+# СТАТИСТИКА
+# =========================================================
+
+async def show_stats(
+    message,
+    edit=False
+):
+
+    rows, total, used, free = (
+        get_password_stats()
+    )
+
+    text = (
+        "📊 <b>СТАТИСТИКА</b>\n\n"
+        f"🔐 Всего паролей: <b>{total}</b>\n"
+        f"🔴 Использовано: <b>{used}</b>\n"
+        f"🟢 Свободно: <b>{free}</b>\n"
+    )
+
+    keyboard = get_back_keyboard()
+
+    if edit:
+
+        await message.edit_text(
+            text,
+            parse_mode="HTML",
+            reply_markup=keyboard
+        )
+
+    else:
+
+        await message.reply_text(
+            text,
+            parse_mode="HTML",
+            reply_markup=keyboard
+        )
+
+
+# =========================================================
 # ТЕКСТОВЫЕ СООБЩЕНИЯ
 # =========================================================
 
@@ -966,22 +1175,14 @@ async def echo(
     text = update.message.text.strip()
 
     # -----------------------------------------------------
-    # Проверяем авторизацию
+    # АВТОРИЗАЦИЯ
     # -----------------------------------------------------
 
     if not is_authorized(user_id):
 
-        # Создаём пользователя
         create_user_if_needed(
             user_id
         )
-
-        # Проверяем, похож ли текст
-        # на пароль.
-        #
-        # Если это обычный текст —
-        # считаем его попыткой ввода пароля.
-        # -------------------------------------------------
 
         success, status = use_password(
             text,
@@ -992,10 +1193,13 @@ async def echo(
 
             await update.message.reply_text(
                 "✅ <b>Пароль принят!</b>\n\n"
-                "Доступ к боту открыт.\n\n"
-                "Теперь можешь отправлять "
-                "вопросы и ответы.",
+                "Доступ к боту открыт.",
                 parse_mode="HTML"
+            )
+
+            await show_main_menu(
+                update.message,
+                user_id
             )
 
             return
@@ -1012,17 +1216,15 @@ async def echo(
         if status == "error":
 
             await update.message.reply_text(
-                "⚠️ Произошла ошибка при "
-                "проверке пароля.\n\n"
-                "Попробуй ещё раз."
+                "⚠️ Ошибка при проверке "
+                "пароля."
             )
 
             return
 
         await update.message.reply_text(
             "❌ Неверный пароль.\n\n"
-            "Введите действующий пароль "
-            "в формате:\n\n"
+            "Введите действующий пароль:\n\n"
             "<code>XXXX-XXXX</code>",
             parse_mode="HTML"
         )
@@ -1030,14 +1232,13 @@ async def echo(
         return
 
     # -----------------------------------------------------
-    # Пользователь авторизован
+    # ДОБАВЛЯЕМ СООБЩЕНИЕ
     # -----------------------------------------------------
 
     if user_id not in user_buffers:
 
         user_buffers[user_id] = []
 
-    # Добавляем сообщение
     user_buffers[user_id].append(
         text
     )
@@ -1062,17 +1263,11 @@ async def echo(
                 reply_markup=None
             )
 
-        except Exception as error:
-
-            print(
-                "Не удалось убрать "
-                "старую кнопку:",
-                error
-            )
+        except Exception:
+            pass
 
     # -----------------------------------------------------
-    # Создаём новое последнее сообщение
-    # с кнопкой
+    # Новое последнее сообщение
     # -----------------------------------------------------
 
     control_message = (
@@ -1106,7 +1301,6 @@ async def finish_input(
         query.from_user.id
     )
 
-    # Дополнительная проверка
     if not is_authorized(user_id):
 
         await query.answer(
@@ -1130,22 +1324,15 @@ async def finish_input(
     if not messages:
 
         await query.message.edit_text(
-            "⚠️ Нет накопленных сообщений."
+            "⚠️ Нет накопленных сообщений.",
+            reply_markup=get_back_keyboard()
         )
 
         return
 
-    # -----------------------------------------------------
-    # Объединяем всё
-    # -----------------------------------------------------
-
     combined_text = "\n\n".join(
         messages
     )
-
-    # -----------------------------------------------------
-    # Разбираем
-    # -----------------------------------------------------
 
     questions = parse_questions(
         combined_text
@@ -1156,24 +1343,17 @@ async def finish_input(
         await query.message.edit_text(
             "❌ Я не смог найти пары "
             "«Вопрос → Ответ».\n\n"
-            "Проверь формат входных сообщений."
+            "Проверь формат входных сообщений.",
+            reply_markup=get_back_keyboard()
         )
 
         user_buffers[user_id] = []
 
         return
 
-    # -----------------------------------------------------
-    # Сохраняем последний набор
-    # -----------------------------------------------------
-
     user_last_texts[user_id] = (
         combined_text
     )
-
-    # -----------------------------------------------------
-    # Очищаем буфер
-    # -----------------------------------------------------
 
     user_buffers[user_id] = []
 
@@ -1182,18 +1362,9 @@ async def finish_input(
         None
     )
 
-    # -----------------------------------------------------
-    # Формируем результат
-    # -----------------------------------------------------
-
     result = make_mobile(
         questions
     )
-
-    # -----------------------------------------------------
-    # Если помещается в одно сообщение —
-    # редактируем сообщение с кнопкой
-    # -----------------------------------------------------
 
     if len(result) <= MAX_MESSAGE_LENGTH:
 
@@ -1204,10 +1375,6 @@ async def finish_input(
         )
 
         return
-
-    # -----------------------------------------------------
-    # Если слишком много текста
-    # -----------------------------------------------------
 
     try:
 
@@ -1274,11 +1441,205 @@ async def button_handler(
     if not query:
         return
 
-    # -----------------------------------------------------
-    # ЗАВЕРШИТЬ ВВОД
-    # -----------------------------------------------------
+    user_id = (
+        query.from_user.id
+    )
 
-    if query.data == "finish_input":
+    action = query.data
+
+    # =====================================================
+    # ГЛАВНОЕ МЕНЮ
+    # =====================================================
+
+    if action == "menu_main":
+
+        await query.answer()
+
+        if not is_authorized(user_id):
+
+            await query.message.edit_text(
+                "⛔ У тебя нет доступа."
+            )
+
+            return
+
+        await show_main_menu(
+            query.message,
+            user_id,
+            edit=True
+        )
+
+        return
+
+    # =====================================================
+    # НАЧАТЬ ВВОД
+    # =====================================================
+
+    if action in (
+        "menu_start",
+        "menu_new"
+    ):
+
+        await query.answer()
+
+        if not is_authorized(user_id):
+
+            await query.answer(
+                "⛔ Нет доступа.",
+                show_alert=True
+            )
+
+            return
+
+        await start_input(
+            query.message,
+            user_id,
+            context
+        )
+
+        return
+
+    # =====================================================
+    # ПОМОЩЬ
+    # =====================================================
+
+    if action == "menu_help":
+
+        await query.answer()
+
+        await show_help(
+            query.message,
+            edit=True
+        )
+
+        return
+
+    # =====================================================
+    # ПАРОЛИ
+    # =====================================================
+
+    if action == "menu_keys":
+
+        await query.answer()
+
+        if not is_owner(user_id):
+
+            await query.answer(
+                "⛔ Нет доступа.",
+                show_alert=True
+            )
+
+            return
+
+        result = make_password_list()
+
+        await query.message.edit_text(
+            result,
+            parse_mode="HTML",
+            reply_markup=get_back_keyboard()
+        )
+
+        return
+
+    # =====================================================
+    # СТАТИСТИКА
+    # =====================================================
+
+    if action == "menu_stats":
+
+        await query.answer()
+
+        if not is_owner(user_id):
+
+            await query.answer(
+                "⛔ Нет доступа.",
+                show_alert=True
+            )
+
+            return
+
+        await show_stats(
+            query.message,
+            edit=True
+        )
+
+        return
+
+    # =====================================================
+    # ПОСЛЕДНИЕ ОТВЕТЫ
+    # =====================================================
+
+    if action == "menu_last":
+
+        await query.answer()
+
+        if not is_authorized(user_id):
+
+            await query.answer(
+                "⛔ Нет доступа.",
+                show_alert=True
+            )
+
+            return
+
+        text = user_last_texts.get(
+            user_id
+        )
+
+        if not text:
+
+            await query.message.edit_text(
+                "📋 <b>Последних ответов пока нет.</b>\n\n"
+                "Сначала обработай какой-нибудь "
+                "набор заданий.",
+                parse_mode="HTML",
+                reply_markup=get_back_keyboard()
+            )
+
+            return
+
+        questions = parse_questions(
+            text
+        )
+
+        if not questions:
+
+            await query.message.edit_text(
+                "❌ Не удалось восстановить "
+                "последние ответы.",
+                reply_markup=get_back_keyboard()
+            )
+
+            return
+
+        result = make_mobile(
+            questions
+        )
+
+        if len(result) <= MAX_MESSAGE_LENGTH:
+
+            await query.message.edit_text(
+                result,
+                parse_mode="HTML",
+                reply_markup=get_result_keyboard()
+            )
+
+        else:
+
+            await query.message.edit_text(
+                "📋 Последние ответы слишком "
+                "большие для одного сообщения.\n\n"
+                "Отправь задания заново.",
+                reply_markup=get_back_keyboard()
+            )
+
+        return
+
+    # =====================================================
+    # ЗАВЕРШИТЬ ВВОД
+    # =====================================================
+
+    if action == "finish_input":
 
         await finish_input(
             update,
@@ -1287,15 +1648,11 @@ async def button_handler(
 
         return
 
+    # =====================================================
+    # НИЖЕ — КНОПКИ ФОРМАТА
+    # =====================================================
+
     await query.answer()
-
-    user_id = (
-        query.from_user.id
-    )
-
-    # -----------------------------------------------------
-    # Проверяем авторизацию
-    # -----------------------------------------------------
 
     if not is_authorized(user_id):
 
@@ -1333,8 +1690,6 @@ async def button_handler(
 
             return
 
-        action = query.data
-
         if action == "mobile":
 
             result = make_mobile(
@@ -1362,10 +1717,6 @@ async def button_handler(
         else:
 
             return
-
-        # -------------------------------------------------
-        # Меняем существующее сообщение
-        # -------------------------------------------------
 
         if len(result) <= MAX_MESSAGE_LENGTH:
 
@@ -1396,7 +1747,7 @@ async def button_handler(
 
 
 # =========================================================
-# ОТПРАВКА ДЛИННОГО СООБЩЕНИЯ
+# ДЛИННОЕ СООБЩЕНИЕ
 # =========================================================
 
 async def send_long_message(
@@ -1576,44 +1927,31 @@ web_app = Starlette(
 async def main():
 
     if not BOT_TOKEN:
-
         raise ValueError(
             "Не задана переменная BOT_TOKEN"
         )
 
     if not RENDER_URL:
-
         raise ValueError(
             "Не задана переменная RENDER_URL"
         )
 
     if not SUPABASE_URL:
-
         raise ValueError(
             "Не задана SUPABASE_URL"
         )
 
     if not SUPABASE_SERVICE_KEY:
-
         raise ValueError(
             "Не задана SUPABASE_SERVICE_KEY"
         )
 
     if not OWNER_ID:
-
         raise ValueError(
             "Не задана OWNER_ID"
         )
 
-    # -----------------------------------------------------
-    # Инициализируем 10 паролей
-    # -----------------------------------------------------
-
     initialize_passwords()
-
-    # -----------------------------------------------------
-    # Запускаем Telegram
-    # -----------------------------------------------------
 
     await telegram_app.initialize()
 
