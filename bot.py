@@ -38,302 +38,46 @@ MAX_MESSAGE_LENGTH = 3900
 
 
 # =========================================================
-# ХРАНЕНИЕ ПОСЛЕДНИХ СООБЩЕНИЙ
+# ПАМЯТЬ
 # =========================================================
 
-user_texts = {}
+# Все сообщения, которые пользователь отправил
+# до нажатия "Завершить ввод"
+user_buffers = {}
+
+# ID последнего сообщения пользователя,
+# на котором сейчас находится кнопка
+user_last_control_message = {}
+
+# Последний готовый набор вопросов и ответов
+user_last_texts = {}
 
 
 # =========================================================
-# РАЗБОР ВОПРОСОВ И ОТВЕТОВ
+# КНОПКА "ЗАВЕРШИТЬ ВВОД"
 # =========================================================
 
-def parse_questions(text: str):
-    """
-    Обрабатывает сообщения такого вида:
+def get_finish_keyboard():
 
-    [28.08.2026 15:59] user: Получил сообщение:
-
-    Вопрос 1:
-    Как называлась политика?
-
-    Ответ:
-    коренизация
-
-    Вопрос 5:
-    Выберите республики.
-
-    Ответ:
-    » РСФСР
-    » Украинская ССР
-
-    На выходе:
-
-    [
-        (1, "Как называлась политика?", "коренизация"),
-        (5, "Выберите республики.", "» РСФСР\n» Украинская ССР")
+    keyboard = [
+        [
+            InlineKeyboardButton(
+                "⏹ Завершить ввод",
+                callback_data="finish_input"
+            )
+        ]
     ]
 
-    Порядок вопросов сохраняется!
-    """
-
-    text = text.strip()
-
-    if not text:
-        return []
-
-    # Нормализуем переносы строк
-    text = text.replace("\r\n", "\n")
-    text = text.replace("\r", "\n")
-
-    # -----------------------------------------------------
-    # Ищем каждый блок:
-    #
-    # Вопрос N:
-    # ТЕКСТ ВОПРОСА
-    #
-    # Ответ:
-    # ОТВЕТ
-    #
-    # До следующего "Вопрос N:".
-    # -----------------------------------------------------
-
-    pattern = re.compile(
-        r"Вопрос\s+(\d+)\s*:\s*"
-        r"(.*?)"
-        r"\bОтвет\s*:\s*"
-        r"(.*?)"
-        r"(?=\n\s*Вопрос\s+\d+\s*:|\Z)",
-        re.IGNORECASE | re.DOTALL
+    return InlineKeyboardMarkup(
+        keyboard
     )
 
-    matches = pattern.finditer(text)
-
-    questions = []
-
-    for match in matches:
-
-        number = int(match.group(1))
-
-        question = match.group(2).strip()
-        answer = match.group(3).strip()
-
-        # -------------------------------------------------
-        # Очищаем вопрос
-        # -------------------------------------------------
-
-        question = re.sub(
-            r"\n\s*",
-            " ",
-            question
-        )
-
-        question = re.sub(
-            r"\s+",
-            " ",
-            question
-        ).strip()
-
-        # -------------------------------------------------
-        # Очищаем ответ
-        # -------------------------------------------------
-
-        # Убираем пробелы в конце строк,
-        # но сохраняем переносы.
-        answer = "\n".join(
-            line.rstrip()
-            for line in answer.split("\n")
-        )
-
-        # Убираем лишние пустые строки
-        answer = re.sub(
-            r"\n\s*\n+",
-            "\n",
-            answer
-        ).strip()
-
-        if question and answer:
-
-            questions.append(
-                (
-                    number,
-                    question,
-                    answer
-                )
-            )
-
-    # -----------------------------------------------------
-    # ВАЖНО:
-    #
-    # Здесь НЕТ сортировки.
-    #
-    # Порядок остаётся таким, как во входном сообщении.
-    # -----------------------------------------------------
-
-    return questions
-
 
 # =========================================================
-# ФОРМАТ ДЛЯ ТЕЛЕФОНА
+# КНОПКИ РЕЗУЛЬТАТА
 # =========================================================
 
-def make_mobile(questions):
-    """
-    Создаёт удобный для телефона формат:
-
-    📝 ОТВЕТЫ
-
-    ❓ 5. Назовите республики...
-
-    ✅ РСФСР
-       Украинская ССР
-
-
-    ❓ 2. В каком году образовался СССР?
-
-    ✅ 1922
-    """
-
-    if not questions:
-        return "❌ Не удалось найти вопросы и ответы."
-
-    parts = [
-        "📝 <b>ОТВЕТЫ</b>"
-    ]
-
-    for number, question, answer in questions:
-
-        safe_question = html.escape(
-            question
-        )
-
-        safe_answer = html.escape(
-            answer
-        )
-
-        # Для ответов со списком сохраняем
-        # нормальные переносы.
-        answer_lines = safe_answer.split("\n")
-
-        formatted_answer = []
-
-        for index, line in enumerate(answer_lines):
-
-            if index == 0:
-                formatted_answer.append(
-                    f"✅ {line}"
-                )
-            else:
-                formatted_answer.append(
-                    f"   {line}"
-                )
-
-        formatted_answer = "\n".join(
-            formatted_answer
-        )
-
-        block = (
-            f"❓ <b>{number}. "
-            f"{safe_question}</b>\n\n"
-            f"{formatted_answer}"
-        )
-
-        parts.append(block)
-
-    return "\n\n\n".join(parts)
-
-
-# =========================================================
-# КОМПАКТНЫЙ СПИСОК
-# =========================================================
-
-def make_list(questions):
-    """
-    Компактный формат:
-
-    5. Назовите республики...
-    → РСФСР, Украинская ССР
-
-    2. В каком году образовался СССР?
-    → 1922
-    """
-
-    if not questions:
-        return "❌ Не удалось найти вопросы и ответы."
-
-    parts = []
-
-    for number, question, answer in questions:
-
-        safe_question = html.escape(
-            question
-        )
-
-        safe_answer = html.escape(
-            answer.replace("\n", " ")
-        )
-
-        safe_answer = re.sub(
-            r"\s+",
-            " ",
-            safe_answer
-        ).strip()
-
-        parts.append(
-            f"<b>{number}. "
-            f"{safe_question}</b>\n"
-            f"→ {safe_answer}"
-        )
-
-    return "\n\n".join(parts)
-
-
-# =========================================================
-# ТОЛЬКО ОТВЕТЫ
-# =========================================================
-
-def make_compact(questions):
-    """
-    Показывает только:
-
-    5. РСФСР, УССР, БССР
-    2. 1922
-    8. коренизация
-
-    Номер сохраняется!
-    """
-
-    if not questions:
-        return "❌ Не удалось найти вопросы и ответы."
-
-    parts = []
-
-    for number, question, answer in questions:
-
-        clean_answer = answer.replace(
-            "\n",
-            " "
-        )
-
-        clean_answer = re.sub(
-            r"\s+",
-            " ",
-            clean_answer
-        ).strip()
-
-        parts.append(
-            f"<b>{number}.</b> "
-            f"{html.escape(clean_answer)}"
-        )
-
-    return "\n".join(parts)
-
-
-# =========================================================
-# КНОПКИ
-# =========================================================
-
-def get_keyboard():
+def get_result_keyboard():
 
     keyboard = [
 
@@ -369,6 +113,676 @@ def get_keyboard():
 
 
 # =========================================================
+# РАЗБОР ВОПРОСОВ И ОТВЕТОВ
+# =========================================================
+
+def parse_questions(text: str):
+
+    text = text.strip()
+
+    if not text:
+        return []
+
+    # Нормализуем переносы строк
+    text = text.replace(
+        "\r\n",
+        "\n"
+    )
+
+    text = text.replace(
+        "\r",
+        "\n"
+    )
+
+    # -----------------------------------------------------
+    # Ищем конструкцию:
+    #
+    # Вопрос 1:
+    # Текст вопроса
+    #
+    # Ответ:
+    # Ответ
+    #
+    # До следующего Вопрос N:
+    # -----------------------------------------------------
+
+    pattern = re.compile(
+        r"Вопрос\s+(\d+)\s*:\s*"
+        r"(.*?)"
+        r"\bОтвет\s*:\s*"
+        r"(.*?)"
+        r"(?=\n\s*Вопрос\s+\d+\s*:|\Z)",
+        re.IGNORECASE | re.DOTALL
+    )
+
+    questions = []
+
+    for match in pattern.finditer(text):
+
+        number = int(
+            match.group(1)
+        )
+
+        question = match.group(2).strip()
+
+        answer = match.group(3).strip()
+
+        # -------------------------------------------------
+        # Очистка вопроса
+        # -------------------------------------------------
+
+        question = re.sub(
+            r"\n\s*",
+            " ",
+            question
+        )
+
+        question = re.sub(
+            r"\s+",
+            " ",
+            question
+        )
+
+        question = question.strip()
+
+        # -------------------------------------------------
+        # Очистка ответа
+        # -------------------------------------------------
+
+        answer = "\n".join(
+            line.rstrip()
+            for line in answer.split("\n")
+        )
+
+        answer = re.sub(
+            r"\n\s*\n+",
+            "\n",
+            answer
+        )
+
+        answer = answer.strip()
+
+        if question and answer:
+
+            questions.append(
+                (
+                    number,
+                    question,
+                    answer
+                )
+            )
+
+    # ВАЖНО:
+    # Никакой сортировки нет.
+    #
+    # Порядок вопросов остаётся таким,
+    # каким они были отправлены пользователем.
+
+    return questions
+
+
+# =========================================================
+# МОБИЛЬНЫЙ ФОРМАТ
+# =========================================================
+
+def make_mobile(questions):
+
+    if not questions:
+
+        return (
+            "❌ Не удалось найти "
+            "вопросы и ответы."
+        )
+
+    parts = [
+        "📝 <b>ОТВЕТЫ</b>"
+    ]
+
+    for number, question, answer in questions:
+
+        safe_question = html.escape(
+            question
+        )
+
+        safe_answer = html.escape(
+            answer
+        )
+
+        answer_lines = safe_answer.split(
+            "\n"
+        )
+
+        formatted_answer = []
+
+        for index, line in enumerate(
+            answer_lines
+        ):
+
+            if index == 0:
+
+                formatted_answer.append(
+                    f"✅ {line}"
+                )
+
+            else:
+
+                formatted_answer.append(
+                    f"   {line}"
+                )
+
+        formatted_answer = "\n".join(
+            formatted_answer
+        )
+
+        block = (
+            f"❓ <b>{number}. "
+            f"{safe_question}</b>\n\n"
+            f"{formatted_answer}"
+        )
+
+        parts.append(
+            block
+        )
+
+    return "\n\n\n".join(
+        parts
+    )
+
+
+# =========================================================
+# КОМПАКТНЫЙ ФОРМАТ
+# =========================================================
+
+def make_list(questions):
+
+    if not questions:
+
+        return (
+            "❌ Не удалось найти "
+            "вопросы и ответы."
+        )
+
+    parts = []
+
+    for number, question, answer in questions:
+
+        safe_question = html.escape(
+            question
+        )
+
+        clean_answer = answer.replace(
+            "\n",
+            " "
+        )
+
+        clean_answer = re.sub(
+            r"\s+",
+            " ",
+            clean_answer
+        )
+
+        clean_answer = clean_answer.strip()
+
+        safe_answer = html.escape(
+            clean_answer
+        )
+
+        parts.append(
+            f"<b>{number}. "
+            f"{safe_question}</b>\n"
+            f"→ {safe_answer}"
+        )
+
+    return "\n\n".join(
+        parts
+    )
+
+
+# =========================================================
+# ТОЛЬКО ОТВЕТЫ
+# =========================================================
+
+def make_compact(questions):
+
+    if not questions:
+
+        return (
+            "❌ Не удалось найти "
+            "вопросы и ответы."
+        )
+
+    parts = []
+
+    for number, question, answer in questions:
+
+        clean_answer = answer.replace(
+            "\n",
+            " "
+        )
+
+        clean_answer = re.sub(
+            r"\s+",
+            " ",
+            clean_answer
+        )
+
+        clean_answer = clean_answer.strip()
+
+        parts.append(
+            f"<b>{number}.</b> "
+            f"{html.escape(clean_answer)}"
+        )
+
+    return "\n".join(
+        parts
+    )
+
+
+# =========================================================
+# /START
+# =========================================================
+
+async def start(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    user_id = update.effective_user.id
+
+    # Начинаем новый набор
+    user_buffers[user_id] = []
+
+    user_last_control_message.pop(
+        user_id,
+        None
+    )
+
+    await update.message.reply_text(
+        "Привет! 👋\n\n"
+        "Отправляй мне сообщения с вопросами "
+        "и ответами.\n\n"
+        "Можно отправить одно или много сообщений.\n\n"
+        "Когда закончишь — нажми "
+        "«⏹ Завершить ввод» "
+        "на последнем сообщении."
+    )
+
+
+# =========================================================
+# ПОЛУЧЕНИЕ НОВОГО СООБЩЕНИЯ
+# =========================================================
+
+async def echo(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    if not update.message:
+        return
+
+    if not update.message.text:
+        return
+
+    text = update.message.text
+
+    user_id = update.effective_user.id
+
+    chat_id = update.effective_chat.id
+
+    # -----------------------------------------------------
+    # Создаём буфер
+    # -----------------------------------------------------
+
+    if user_id not in user_buffers:
+
+        user_buffers[user_id] = []
+
+    # -----------------------------------------------------
+    # Добавляем новое сообщение
+    # -----------------------------------------------------
+
+    user_buffers[user_id].append(
+        text
+    )
+
+    # -----------------------------------------------------
+    # Убираем кнопку со старого последнего
+    # сообщения бота
+    # -----------------------------------------------------
+
+    old_control_message_id = (
+        user_last_control_message.get(
+            user_id
+        )
+    )
+
+    if old_control_message_id:
+
+        try:
+
+            await context.bot.edit_message_reply_markup(
+                chat_id=chat_id,
+                message_id=old_control_message_id,
+                reply_markup=None
+            )
+
+        except Exception as error:
+
+            print(
+                "Не удалось убрать старую кнопку:",
+                error
+            )
+
+    # -----------------------------------------------------
+    # Создаём новое сообщение с кнопкой
+    # -----------------------------------------------------
+
+    control_message = (
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text="⏳ Ответы собираются...",
+            reply_markup=get_finish_keyboard()
+        )
+    )
+
+    # Запоминаем его как последнее
+    user_last_control_message[user_id] = (
+        control_message.message_id
+    )
+
+
+# =========================================================
+# ЗАВЕРШЕНИЕ ВВОДА
+# =========================================================
+
+async def finish_input(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    query = update.callback_query
+
+    if not query:
+        return
+
+    await query.answer(
+        "Обрабатываю..."
+    )
+
+    user_id = query.from_user.id
+
+    chat_id = query.message.chat_id
+
+    # -----------------------------------------------------
+    # Получаем все накопленные сообщения
+    # -----------------------------------------------------
+
+    messages = user_buffers.get(
+        user_id,
+        []
+    )
+
+    if not messages:
+
+        await query.message.edit_text(
+            "⚠️ Нет накопленных сообщений."
+        )
+
+        return
+
+    # -----------------------------------------------------
+    # Объединяем
+    # -----------------------------------------------------
+
+    combined_text = "\n\n".join(
+        messages
+    )
+
+    # -----------------------------------------------------
+    # Разбираем
+    # -----------------------------------------------------
+
+    questions = parse_questions(
+        combined_text
+    )
+
+    if not questions:
+
+        await query.message.edit_text(
+            "❌ Я не смог найти пары "
+            "«Вопрос → Ответ».\n\n"
+            "Проверь формат входных сообщений."
+        )
+
+        user_buffers[user_id] = []
+
+        return
+
+    # -----------------------------------------------------
+    # Сохраняем последний результат
+    # -----------------------------------------------------
+
+    user_last_texts[user_id] = (
+        combined_text
+    )
+
+    # -----------------------------------------------------
+    # Очищаем буфер
+    # -----------------------------------------------------
+
+    user_buffers[user_id] = []
+
+    user_last_control_message.pop(
+        user_id,
+        None
+    )
+
+    # -----------------------------------------------------
+    # Создаём результат
+    # -----------------------------------------------------
+
+    result = make_mobile(
+        questions
+    )
+
+    # -----------------------------------------------------
+    # Пытаемся превратить сообщение
+    # с кнопкой в результат
+    # -----------------------------------------------------
+
+    if len(result) <= MAX_MESSAGE_LENGTH:
+
+        await query.message.edit_text(
+            result,
+            parse_mode="HTML",
+            reply_markup=get_result_keyboard()
+        )
+
+    else:
+
+        # Если слишком много текста,
+        # удаляем сообщение с кнопкой
+        # и отправляем части.
+
+        try:
+
+            await query.message.delete()
+
+        except Exception:
+            pass
+
+        blocks = result.split(
+            "\n\n\n"
+        )
+
+        current = ""
+
+        for block in blocks:
+
+            if not current:
+
+                current = block
+
+            elif (
+                len(current)
+                + len(block)
+                + 3
+                <= MAX_MESSAGE_LENGTH
+            ):
+
+                current += (
+                    "\n\n\n"
+                    + block
+                )
+
+            else:
+
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text=current,
+                    parse_mode="HTML"
+                )
+
+                current = block
+
+        if current:
+
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=current,
+                parse_mode="HTML",
+                reply_markup=get_result_keyboard()
+            )
+
+
+# =========================================================
+# ОБРАБОТКА КНОПОК
+# =========================================================
+
+async def button_handler(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    query = update.callback_query
+
+    if not query:
+        return
+
+    # -----------------------------------------------------
+    # Кнопка "Завершить ввод"
+    # -----------------------------------------------------
+
+    if query.data == "finish_input":
+
+        await finish_input(
+            update,
+            context
+        )
+
+        return
+
+    # -----------------------------------------------------
+    # Остальные кнопки
+    # -----------------------------------------------------
+
+    await query.answer()
+
+    user_id = query.from_user.id
+
+    text = user_last_texts.get(
+        user_id
+    )
+
+    if not text:
+
+        await query.message.reply_text(
+            "⚠️ Исходные данные больше "
+            "не найдены.\n\n"
+            "Пришли сообщения ещё раз."
+        )
+
+        return
+
+    try:
+
+        questions = parse_questions(
+            text
+        )
+
+        if not questions:
+
+            await query.message.reply_text(
+                "❌ Не удалось разобрать "
+                "исходные данные."
+            )
+
+            return
+
+        action = query.data
+
+        if action == "mobile":
+
+            result = make_mobile(
+                questions
+            )
+
+        elif action == "list":
+
+            result = make_list(
+                questions
+            )
+
+        elif action == "compact":
+
+            result = make_compact(
+                questions
+            )
+
+        elif action == "repeat":
+
+            result = make_mobile(
+                questions
+            )
+
+        else:
+
+            return
+
+        # -------------------------------------------------
+        # Обновляем текущее сообщение,
+        # вместо создания нового
+        # -------------------------------------------------
+
+        if len(result) <= MAX_MESSAGE_LENGTH:
+
+            await query.message.edit_text(
+                result,
+                parse_mode="HTML",
+                reply_markup=get_result_keyboard()
+            )
+
+        else:
+
+            await send_long_message(
+                query.message,
+                result,
+                reply_markup=get_result_keyboard()
+            )
+
+    except Exception as error:
+
+        print(
+            "Ошибка кнопки:",
+            error
+        )
+
+        await query.message.reply_text(
+            "❌ Не удалось изменить формат."
+        )
+
+
+# =========================================================
 # ОТПРАВКА ДЛИННЫХ СООБЩЕНИЙ
 # =========================================================
 
@@ -388,8 +802,9 @@ async def send_long_message(
 
         return
 
-    # Разбиваем по блокам.
-    blocks = text.split("\n\n\n")
+    blocks = text.split(
+        "\n\n\n"
+    )
 
     current = ""
 
@@ -399,9 +814,17 @@ async def send_long_message(
 
             current = block
 
-        elif len(current) + len(block) + 3 <= MAX_MESSAGE_LENGTH:
+        elif (
+            len(current)
+            + len(block)
+            + 3
+            <= MAX_MESSAGE_LENGTH
+        ):
 
-            current += "\n\n\n" + block
+            current += (
+                "\n\n\n"
+                + block
+            )
 
         else:
 
@@ -418,195 +841,6 @@ async def send_long_message(
             current,
             parse_mode="HTML",
             reply_markup=reply_markup
-        )
-
-
-# =========================================================
-# /START
-# =========================================================
-
-async def start(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
-
-    await update.message.reply_text(
-        "Привет! 👋\n\n"
-        "Пришли мне текст с вопросами и ответами.\n\n"
-        "Я автоматически уберу дату, имя, "
-        "\"Получил сообщение:\" и всё остальное, "
-        "оставив вопрос и его ответ.\n\n"
-        "Порядок вопросов сохранится."
-    )
-
-
-# =========================================================
-# ОБРАБОТКА НОВОГО СООБЩЕНИЯ
-# =========================================================
-
-async def echo(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
-
-    if not update.message:
-        return
-
-    if not update.message.text:
-        return
-
-    text = update.message.text
-
-    user_id = update.effective_user.id
-
-    # Запоминаем исходный текст
-    user_texts[user_id] = text
-
-    try:
-
-        questions = parse_questions(text)
-
-        if not questions:
-
-            await update.message.reply_text(
-                "❌ Я не смог найти пары "
-                "\"Вопрос → Ответ\".\n\n"
-                "Проверь, что в тексте есть:\n"
-                "Вопрос 1:\n"
-                "...\n"
-                "Ответ:\n"
-                "..."
-            )
-
-            return
-
-        result = make_mobile(
-            questions
-        )
-
-        await send_long_message(
-            update.message,
-            result,
-            reply_markup=get_keyboard()
-        )
-
-    except Exception as error:
-
-        print(
-            f"Ошибка обработки: {error}"
-        )
-
-        await update.message.reply_text(
-            "❌ Произошла ошибка при обработке."
-        )
-
-
-# =========================================================
-# ОБРАБОТКА КНОПОК
-# =========================================================
-
-async def button_handler(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
-
-    query = update.callback_query
-
-    if not query:
-        return
-
-    await query.answer()
-
-    user_id = query.from_user.id
-
-    text = user_texts.get(
-        user_id
-    )
-
-    if not text:
-
-        await query.message.reply_text(
-            "⚠️ Исходный текст больше не найден.\n"
-            "Пришли его ещё раз."
-        )
-
-        return
-
-    try:
-
-        questions = parse_questions(
-            text
-        )
-
-        if not questions:
-
-            await query.message.reply_text(
-                "❌ Не удалось разобрать "
-                "исходный текст."
-            )
-
-            return
-
-        action = query.data
-
-        # -------------------------------------------------
-        # УДОБНЫЙ ФОРМАТ
-        # -------------------------------------------------
-
-        if action == "mobile":
-
-            result = make_mobile(
-                questions
-            )
-
-        # -------------------------------------------------
-        # СПИСОК
-        # -------------------------------------------------
-
-        elif action == "list":
-
-            result = make_list(
-                questions
-            )
-
-        # -------------------------------------------------
-        # ТОЛЬКО ОТВЕТЫ
-        # -------------------------------------------------
-
-        elif action == "compact":
-
-            result = make_compact(
-                questions
-            )
-
-        # -------------------------------------------------
-        # ЗАНОВО
-        # -------------------------------------------------
-
-        elif action == "repeat":
-
-            result = make_mobile(
-                questions
-            )
-
-        else:
-
-            return
-
-        await send_long_message(
-            query.message,
-            result,
-            reply_markup=get_keyboard()
-        )
-
-    except Exception as error:
-
-        print(
-            f"Ошибка кнопки: {error}"
-        )
-
-        await query.message.reply_text(
-            "❌ Не удалось изменить формат."
         )
 
 
@@ -739,7 +973,9 @@ async def main():
         port=PORT
     )
 
-    server = uvicorn.Server(config)
+    server = uvicorn.Server(
+        config
+    )
 
     print(
         f"Бот запущен на порту {PORT}"
@@ -756,6 +992,7 @@ async def main():
     finally:
 
         await telegram_app.stop()
+
         await telegram_app.shutdown()
 
 
