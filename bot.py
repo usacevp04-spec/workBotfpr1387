@@ -1,7 +1,6 @@
 import os
 import asyncio
 import re
-import textwrap
 import html
 
 import uvicorn
@@ -16,6 +15,7 @@ from telegram import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
 )
+
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -34,34 +34,47 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 RENDER_URL = os.getenv("RENDER_URL")
 PORT = int(os.environ.get("PORT", 10000))
 
-TABLE_WIDTH = 48
+MAX_MESSAGE_LENGTH = 3900
 
 
 # =========================================================
 # ХРАНЕНИЕ ПОСЛЕДНИХ СООБЩЕНИЙ
 # =========================================================
 
-# Здесь бот хранит последнее сообщение каждого пользователя.
-# Это нужно для кнопок "Таблица", "Список" и т.д.
 user_texts = {}
 
 
 # =========================================================
-# РАЗБОР ОТВЕТОВ
+# РАЗБОР ВОПРОСОВ И ОТВЕТОВ
 # =========================================================
 
-def parse_answers(text: str):
+def parse_questions(text: str):
     """
-    Распознаёт:
+    Обрабатывает сообщения такого вида:
 
-    1. Ответ
-    1) Ответ
-    1 - Ответ
-    1 — Ответ
-    1: Ответ
-    1 Ответ
+    [28.08.2026 15:59] user: Получил сообщение:
 
-    Поддерживает многострочные ответы.
+    Вопрос 1:
+    Как называлась политика?
+
+    Ответ:
+    коренизация
+
+    Вопрос 5:
+    Выберите республики.
+
+    Ответ:
+    » РСФСР
+    » Украинская ССР
+
+    На выходе:
+
+    [
+        (1, "Как называлась политика?", "коренизация"),
+        (5, "Выберите республики.", "» РСФСР\n» Украинская ССР")
+    ]
+
+    Порядок вопросов сохраняется!
     """
 
     text = text.strip()
@@ -69,259 +82,234 @@ def parse_answers(text: str):
     if not text:
         return []
 
+    # Нормализуем переносы строк
     text = text.replace("\r\n", "\n")
     text = text.replace("\r", "\n")
 
-    # Ищем начало нумерованного пункта.
+    # -----------------------------------------------------
+    # Ищем каждый блок:
     #
-    # ВАЖНО:
-    # Нумерация должна начинаться с новой строки.
+    # Вопрос N:
+    # ТЕКСТ ВОПРОСА
+    #
+    # Ответ:
+    # ОТВЕТ
+    #
+    # До следующего "Вопрос N:".
+    # -----------------------------------------------------
+
     pattern = re.compile(
-        r"(?m)^\s*(\d+)\s*(?:[.)]|[-–—:]|\s)\s*(.*)$"
+        r"Вопрос\s+(\d+)\s*:\s*"
+        r"(.*?)"
+        r"\bОтвет\s*:\s*"
+        r"(.*?)"
+        r"(?=\n\s*Вопрос\s+\d+\s*:|\Z)",
+        re.IGNORECASE | re.DOTALL
     )
 
-    matches = list(pattern.finditer(text))
+    matches = pattern.finditer(text)
 
-    # -----------------------------------------------------
-    # Нумерация найдена
-    # -----------------------------------------------------
+    questions = []
 
-    if matches:
+    for match in matches:
 
-        answers = []
+        number = int(match.group(1))
 
-        for i, match in enumerate(matches):
+        question = match.group(2).strip()
+        answer = match.group(3).strip()
 
-            number = int(match.group(1))
-            first_line = match.group(2).strip()
+        # -------------------------------------------------
+        # Очищаем вопрос
+        # -------------------------------------------------
 
-            start = match.end()
+        question = re.sub(
+            r"\n\s*",
+            " ",
+            question
+        )
 
-            if i + 1 < len(matches):
-                end = matches[i + 1].start()
-            else:
-                end = len(text)
+        question = re.sub(
+            r"\s+",
+            " ",
+            question
+        ).strip()
 
-            continuation = text[start:end].strip()
+        # -------------------------------------------------
+        # Очищаем ответ
+        # -------------------------------------------------
 
-            if continuation:
+        # Убираем пробелы в конце строк,
+        # но сохраняем переносы.
+        answer = "\n".join(
+            line.rstrip()
+            for line in answer.split("\n")
+        )
 
-                if first_line:
-                    answer = first_line + "\n" + continuation
-                else:
-                    answer = continuation
+        # Убираем лишние пустые строки
+        answer = re.sub(
+            r"\n\s*\n+",
+            "\n",
+            answer
+        ).strip()
 
-            else:
-                answer = first_line
+        if question and answer:
 
-            # Нормализуем пробелы
-            answer = re.sub(
-                r"[ \t]+",
-                " ",
-                answer
-            )
-
-            # Убираем лишние пустые строки
-            answer = re.sub(
-                r"\n\s*\n+",
-                "\n",
-                answer
-            )
-
-            if answer:
-                answers.append(
-                    (number, answer)
+            questions.append(
+                (
+                    number,
+                    question,
+                    answer
                 )
-
-        if answers:
-            return answers
+            )
 
     # -----------------------------------------------------
-    # Нумерации нет
+    # ВАЖНО:
+    #
+    # Здесь НЕТ сортировки.
+    #
+    # Порядок остаётся таким, как во входном сообщении.
     # -----------------------------------------------------
 
-    lines = [
-        line.strip()
-        for line in text.split("\n")
-        if line.strip()
+    return questions
+
+
+# =========================================================
+# ФОРМАТ ДЛЯ ТЕЛЕФОНА
+# =========================================================
+
+def make_mobile(questions):
+    """
+    Создаёт удобный для телефона формат:
+
+    📝 ОТВЕТЫ
+
+    ❓ 5. Назовите республики...
+
+    ✅ РСФСР
+       Украинская ССР
+
+
+    ❓ 2. В каком году образовался СССР?
+
+    ✅ 1922
+    """
+
+    if not questions:
+        return "❌ Не удалось найти вопросы и ответы."
+
+    parts = [
+        "📝 <b>ОТВЕТЫ</b>"
     ]
 
-    if not lines:
-        return []
+    for number, question, answer in questions:
 
-    return [
-        (index, line)
-        for index, line in enumerate(
-            lines,
-            start=1
-        )
-    ]
-
-
-# =========================================================
-# ПЕРЕНОС СТРОК
-# =========================================================
-
-def wrap_answer(answer: str, width: int):
-
-    result = []
-
-    for line in answer.split("\n"):
-
-        wrapped = textwrap.wrap(
-            line,
-            width=width,
-            break_long_words=False,
-            break_on_hyphens=False,
+        safe_question = html.escape(
+            question
         )
 
-        if wrapped:
-            result.extend(wrapped)
-        else:
-            result.append("")
-
-    return result
-
-
-# =========================================================
-# СОЗДАНИЕ ТАБЛИЦЫ
-# =========================================================
-
-def make_table(answers):
-
-    if not answers:
-        return "❌ Не удалось найти ответы."
-
-    number_width = max(
-        len(str(number))
-        for number, _ in answers
-    )
-
-    answer_width = (
-        TABLE_WIDTH
-        - number_width
-        - 7
-    )
-
-    answer_width = max(
-        answer_width,
-        15
-    )
-
-    top = (
-        "┌"
-        + "─" * (number_width + 2)
-        + "┬"
-        + "─" * (answer_width + 2)
-        + "┐"
-    )
-
-    header = (
-        "│ "
-        + "№".center(number_width)
-        + " │ "
-        + "Ответ".ljust(answer_width)
-        + " │"
-    )
-
-    separator = (
-        "├"
-        + "─" * (number_width + 2)
-        + "┼"
-        + "─" * (answer_width + 2)
-        + "┤"
-    )
-
-    bottom = (
-        "└"
-        + "─" * (number_width + 2)
-        + "┴"
-        + "─" * (answer_width + 2)
-        + "┘"
-    )
-
-    rows = [
-        top,
-        header,
-        separator,
-    ]
-
-    for answer_index, (number, answer) in enumerate(answers):
-
-        wrapped = wrap_answer(
-            answer,
-            answer_width
+        safe_answer = html.escape(
+            answer
         )
 
-        for line_index, line in enumerate(wrapped):
+        # Для ответов со списком сохраняем
+        # нормальные переносы.
+        answer_lines = safe_answer.split("\n")
 
-            if line_index == 0:
-                number_text = str(number).center(
-                    number_width
+        formatted_answer = []
+
+        for index, line in enumerate(answer_lines):
+
+            if index == 0:
+                formatted_answer.append(
+                    f"✅ {line}"
                 )
             else:
-                number_text = " " * number_width
+                formatted_answer.append(
+                    f"   {line}"
+                )
 
-            row = (
-                "│ "
-                + number_text
-                + " │ "
-                + line.ljust(answer_width)
-                + " │"
-            )
-
-            rows.append(row)
-
-        # Разделитель
-        if answer_index < len(answers) - 1:
-
-            rows.append(
-                "├"
-                + "─" * (number_width + 2)
-                + "┼"
-                + "─" * (answer_width + 2)
-                + "┤"
-            )
-
-    rows.append(bottom)
-
-    return "\n".join(rows)
-
-
-# =========================================================
-# ОБЫЧНЫЙ СПИСОК
-# =========================================================
-
-def make_list(answers):
-
-    if not answers:
-        return "❌ Не удалось найти ответы."
-
-    result = []
-
-    for number, answer in answers:
-
-        result.append(
-            f"{number}. {answer}"
+        formatted_answer = "\n".join(
+            formatted_answer
         )
 
-    return "\n\n".join(result)
+        block = (
+            f"❓ <b>{number}. "
+            f"{safe_question}</b>\n\n"
+            f"{formatted_answer}"
+        )
+
+        parts.append(block)
+
+    return "\n\n\n".join(parts)
+
+
+# =========================================================
+# КОМПАКТНЫЙ СПИСОК
+# =========================================================
+
+def make_list(questions):
+    """
+    Компактный формат:
+
+    5. Назовите республики...
+    → РСФСР, Украинская ССР
+
+    2. В каком году образовался СССР?
+    → 1922
+    """
+
+    if not questions:
+        return "❌ Не удалось найти вопросы и ответы."
+
+    parts = []
+
+    for number, question, answer in questions:
+
+        safe_question = html.escape(
+            question
+        )
+
+        safe_answer = html.escape(
+            answer.replace("\n", " ")
+        )
+
+        safe_answer = re.sub(
+            r"\s+",
+            " ",
+            safe_answer
+        ).strip()
+
+        parts.append(
+            f"<b>{number}. "
+            f"{safe_question}</b>\n"
+            f"→ {safe_answer}"
+        )
+
+    return "\n\n".join(parts)
 
 
 # =========================================================
 # ТОЛЬКО ОТВЕТЫ
 # =========================================================
 
-def make_compact(answers):
+def make_compact(questions):
+    """
+    Показывает только:
 
-    if not answers:
-        return "❌ Не удалось найти ответы."
+    5. РСФСР, УССР, БССР
+    2. 1922
+    8. коренизация
 
-    result = []
+    Номер сохраняется!
+    """
 
-    for number, answer in answers:
+    if not questions:
+        return "❌ Не удалось найти вопросы и ответы."
 
-        # Переносы строк превращаем в пробелы
+    parts = []
+
+    for number, question, answer in questions:
+
         clean_answer = answer.replace(
             "\n",
             " "
@@ -333,11 +321,12 @@ def make_compact(answers):
             clean_answer
         ).strip()
 
-        result.append(
-            f"{number}. {clean_answer}"
+        parts.append(
+            f"<b>{number}.</b> "
+            f"{html.escape(clean_answer)}"
         )
 
-    return " ".join(result)
+    return "\n".join(parts)
 
 
 # =========================================================
@@ -350,9 +339,10 @@ def get_keyboard():
 
         [
             InlineKeyboardButton(
-                "📊 Таблица",
-                callback_data="table"
+                "📱 Удобно",
+                callback_data="mobile"
             ),
+
             InlineKeyboardButton(
                 "📝 Список",
                 callback_data="list"
@@ -361,11 +351,12 @@ def get_keyboard():
 
         [
             InlineKeyboardButton(
-                "🔢 Компактно",
+                "⚡ Только ответы",
                 callback_data="compact"
             ),
+
             InlineKeyboardButton(
-                "🔄 Обработать заново",
+                "🔄 Заново",
                 callback_data="repeat"
             ),
         ],
@@ -375,6 +366,59 @@ def get_keyboard():
     return InlineKeyboardMarkup(
         keyboard
     )
+
+
+# =========================================================
+# ОТПРАВКА ДЛИННЫХ СООБЩЕНИЙ
+# =========================================================
+
+async def send_long_message(
+    message,
+    text,
+    reply_markup=None
+):
+
+    if len(text) <= MAX_MESSAGE_LENGTH:
+
+        await message.reply_text(
+            text,
+            parse_mode="HTML",
+            reply_markup=reply_markup
+        )
+
+        return
+
+    # Разбиваем по блокам.
+    blocks = text.split("\n\n\n")
+
+    current = ""
+
+    for block in blocks:
+
+        if not current:
+
+            current = block
+
+        elif len(current) + len(block) + 3 <= MAX_MESSAGE_LENGTH:
+
+            current += "\n\n\n" + block
+
+        else:
+
+            await message.reply_text(
+                current,
+                parse_mode="HTML"
+            )
+
+            current = block
+
+    if current:
+
+        await message.reply_text(
+            current,
+            parse_mode="HTML",
+            reply_markup=reply_markup
+        )
 
 
 # =========================================================
@@ -388,14 +432,11 @@ async def start(
 
     await update.message.reply_text(
         "Привет! 👋\n\n"
-        "Пришли мне ответы — я автоматически "
-        "распознаю их и оформлю.\n\n"
-        "Например:\n\n"
-        "1) Москва\n"
-        "2) Санкт-Петербург\n"
-        "3) Казань\n"
-        "4) Новосибирск\n\n"
-        "После этого ты сможешь выбрать нужный формат."
+        "Пришли мне текст с вопросами и ответами.\n\n"
+        "Я автоматически уберу дату, имя, "
+        "\"Получил сообщение:\" и всё остальное, "
+        "оставив вопрос и его ответ.\n\n"
+        "Порядок вопросов сохранится."
     )
 
 
@@ -423,23 +464,29 @@ async def echo(
 
     try:
 
-        answers = parse_answers(text)
+        questions = parse_questions(text)
 
-        if not answers:
+        if not questions:
 
             await update.message.reply_text(
-                "❌ Я не смог найти ответы."
+                "❌ Я не смог найти пары "
+                "\"Вопрос → Ответ\".\n\n"
+                "Проверь, что в тексте есть:\n"
+                "Вопрос 1:\n"
+                "...\n"
+                "Ответ:\n"
+                "..."
             )
 
             return
 
-        table = make_table(answers)
+        result = make_mobile(
+            questions
+        )
 
-        safe_table = html.escape(table)
-
-        await update.message.reply_text(
-            f"<pre>{safe_table}</pre>",
-            parse_mode="HTML",
+        await send_long_message(
+            update.message,
+            result,
             reply_markup=get_keyboard()
         )
 
@@ -472,13 +519,14 @@ async def button_handler(
 
     user_id = query.from_user.id
 
-    text = user_texts.get(user_id)
+    text = user_texts.get(
+        user_id
+    )
 
-    # Если исходный текст не найден
     if not text:
 
         await query.message.reply_text(
-            "⚠️ Я больше не вижу исходный текст.\n"
+            "⚠️ Исходный текст больше не найден.\n"
             "Пришли его ещё раз."
         )
 
@@ -486,12 +534,15 @@ async def button_handler(
 
     try:
 
-        answers = parse_answers(text)
+        questions = parse_questions(
+            text
+        )
 
-        if not answers:
+        if not questions:
 
             await query.message.reply_text(
-                "❌ Не удалось разобрать ответы."
+                "❌ Не удалось разобрать "
+                "исходный текст."
             )
 
             return
@@ -499,17 +550,13 @@ async def button_handler(
         action = query.data
 
         # -------------------------------------------------
-        # ТАБЛИЦА
+        # УДОБНЫЙ ФОРМАТ
         # -------------------------------------------------
 
-        if action == "table":
+        if action == "mobile":
 
-            result = make_table(answers)
-
-            await query.message.reply_text(
-                f"<pre>{html.escape(result)}</pre>",
-                parse_mode="HTML",
-                reply_markup=get_keyboard()
+            result = make_mobile(
+                questions
             )
 
         # -------------------------------------------------
@@ -518,39 +565,39 @@ async def button_handler(
 
         elif action == "list":
 
-            result = make_list(answers)
-
-            await query.message.reply_text(
-                result,
-                reply_markup=get_keyboard()
+            result = make_list(
+                questions
             )
 
         # -------------------------------------------------
-        # КОМПАКТНО
+        # ТОЛЬКО ОТВЕТЫ
         # -------------------------------------------------
 
         elif action == "compact":
 
-            result = make_compact(answers)
-
-            await query.message.reply_text(
-                result,
-                reply_markup=get_keyboard()
+            result = make_compact(
+                questions
             )
 
         # -------------------------------------------------
-        # ПОВТОРНАЯ ОБРАБОТКА
+        # ЗАНОВО
         # -------------------------------------------------
 
         elif action == "repeat":
 
-            result = make_table(answers)
-
-            await query.message.reply_text(
-                f"<pre>{html.escape(result)}</pre>",
-                parse_mode="HTML",
-                reply_markup=get_keyboard()
+            result = make_mobile(
+                questions
             )
+
+        else:
+
+            return
+
+        await send_long_message(
+            query.message,
+            result,
+            reply_markup=get_keyboard()
+        )
 
     except Exception as error:
 
@@ -559,7 +606,7 @@ async def button_handler(
         )
 
         await query.message.reply_text(
-            "❌ Не удалось выполнить действие."
+            "❌ Не удалось изменить формат."
         )
 
 
@@ -639,6 +686,7 @@ async def health(
 
 web_app = Starlette(
     routes=[
+
         Route(
             "/",
             health
@@ -665,11 +713,13 @@ web_app = Starlette(
 async def main():
 
     if not BOT_TOKEN:
+
         raise ValueError(
             "Не задана переменная BOT_TOKEN"
         )
 
     if not RENDER_URL:
+
         raise ValueError(
             "Не задана переменная RENDER_URL"
         )
@@ -710,7 +760,7 @@ async def main():
 
 
 # =========================================================
-# START
+# ЗАПУСК
 # =========================================================
 
 if __name__ == "__main__":
