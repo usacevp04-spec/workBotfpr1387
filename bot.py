@@ -621,12 +621,497 @@ def get_result_keyboard():
 
 
 # =========================================================
-# РАЗБОР ВОПРОСОВ
+# УНИВЕРСАЛЬНЫЙ РАЗБОР ВОПРОСОВ И ОТВЕТОВ
 # =========================================================
 
-def parse_questions(text: str):
+def clean_markdown(text: str):
+    """
+    Убирает техническое форматирование Markdown/Telegram,
+    но оставляет сам текст.
+    """
+
+    # Удаляем markdown-ссылки:
+    # [текст](https://...)
+    text = re.sub(
+        r'\[([^\]]+)\]\([^)]+\)',
+        r'\1',
+        text
+    )
+
+    # Удаляем голые URL
+    text = re.sub(
+        r'https?://\S+',
+        '',
+        text
+    )
+
+    # Убираем жирный/курсив/код
+    text = re.sub(
+        r'(\*\*|__|\*|_|`)',
+        '',
+        text
+    )
+
+    # Убираем экранированные символы
+    text = text.replace(
+        r'\_',
+        '_'
+    )
+
+    text = text.replace(
+        r'\.',
+        '.'
+    )
+
+    return text
+
+
+def clean_question(text: str):
+    """
+    Очищает текст вопроса от:
+    - даты и имени;
+    - ссылок;
+    - служебного текста;
+    - лишних пустых строк.
+    """
 
     text = text.strip()
+
+    # -----------------------------------------------------
+    # Удаляем заголовок экспорта Telegram
+    #
+    # [28.08.2026 23:31] Kirill Rem:
+    # -----------------------------------------------------
+
+    text = re.sub(
+        r'^\s*\[\d{1,2}\.\d{1,2}\.\d{4}\s+'
+        r'\d{1,2}:\d{2}\]\s*'
+        r'[^:]+:\s*',
+        '',
+        text,
+        flags=re.IGNORECASE
+    )
+
+    # -----------------------------------------------------
+    # Удаляем ссылки
+    # -----------------------------------------------------
+
+    text = re.sub(
+        r'https?://\S+',
+        '',
+        text
+    )
+
+    # -----------------------------------------------------
+    # Удаляем markdown
+    # -----------------------------------------------------
+
+    text = clean_markdown(text)
+
+    # -----------------------------------------------------
+    # Удаляем технический текст
+    # -----------------------------------------------------
+
+    text = re.sub(
+        r'Получил\s+сообщение\s*:?',
+        '',
+        text,
+        flags=re.IGNORECASE
+    )
+
+    # -----------------------------------------------------
+    # Убираем лишние пустые строки
+    # -----------------------------------------------------
+
+    lines = []
+
+    for line in text.splitlines():
+
+        line = line.strip()
+
+        if not line:
+            continue
+
+        lines.append(line)
+
+    text = "\n".join(lines)
+
+    # -----------------------------------------------------
+    # В большинстве заданий после ссылки идут варианты.
+    #
+    # Если ссылка была между вопросом и вариантами,
+    # сохраняем сам вопрос, а техническую часть убираем.
+    # -----------------------------------------------------
+
+    # Убираем строки, которые выглядят как голые номера
+    # типа:
+    #
+    # 1
+    # 2
+    #
+    # Они обычно являются частью изображения/таблицы.
+    text = re.sub(
+        r'(?m)^\s*\d+\s*$',
+        '',
+        text
+    )
+
+    # Повторная очистка пустых строк
+    text = re.sub(
+        r'\n{2,}',
+        '\n',
+        text
+    )
+
+    text = text.strip()
+
+    return text
+
+
+def clean_answer(text: str):
+    """
+    Очищает ответ от:
+    - [ОТВЕТ](...)
+    - ссылок;
+    - markdown;
+    - Получил сообщение:
+    """
+
+    text = text.strip()
+
+    # -----------------------------------------------------
+    # Удаляем служебную конструкцию [ОТВЕТ](...)
+    # -----------------------------------------------------
+
+    text = re.sub(
+        r'\[\s*\**ОТВЕТ\**\s*\]'
+        r'\([^)]+\)'
+        r'\s*\**\s*:?\s*',
+        '',
+        text,
+        flags=re.IGNORECASE
+    )
+
+    # -----------------------------------------------------
+    # Удаляем "ОТВЕТ:"
+    # -----------------------------------------------------
+
+    text = re.sub(
+        r'^\s*\**\s*ОТВЕТ\s*\**\s*:?\s*',
+        '',
+        text,
+        flags=re.IGNORECASE
+    )
+
+    # -----------------------------------------------------
+    # Удаляем "Получил сообщение:"
+    # -----------------------------------------------------
+
+    text = re.sub(
+        r'Получил\s+сообщение\s*:?',
+        '',
+        text,
+        flags=re.IGNORECASE
+    )
+
+    # -----------------------------------------------------
+    # Удаляем markdown-ссылки
+    # -----------------------------------------------------
+
+    text = re.sub(
+        r'\[([^\]]+)\]\([^)]+\)',
+        r'\1',
+        text
+    )
+
+    # -----------------------------------------------------
+    # Удаляем голые ссылки
+    # -----------------------------------------------------
+
+    text = re.sub(
+        r'https?://\S+',
+        '',
+        text
+    )
+
+    # -----------------------------------------------------
+    # Удаляем markdown
+    # -----------------------------------------------------
+
+    text = re.sub(
+        r'(\*\*|__|\*|_|`)',
+        '',
+        text
+    )
+
+    # -----------------------------------------------------
+    # Убираем лишние пробелы
+    # -----------------------------------------------------
+
+    lines = []
+
+    for line in text.splitlines():
+
+        line = line.strip()
+
+        if not line:
+            continue
+
+        # Убираем стрелочные маркеры "»"
+        line = re.sub(
+            r'^\s*[»•]\s*',
+            '',
+            line
+        )
+
+        lines.append(line)
+
+    text = "\n".join(lines)
+
+    text = re.sub(
+        r'\n{2,}',
+        '\n',
+        text
+    )
+
+    return text.strip()
+
+def parse_new_format(text: str):
+    """
+    Разбирает новый формат экспорта Telegram:
+
+    [дата время] Имя:
+    Вопрос...
+
+    [ОТВЕТ](...)**:**
+    ответ
+
+    Возвращает:
+    (номер, вопрос, ответ)
+    """
+
+    questions = []
+
+    # -----------------------------------------------------
+    # Сначала разделяем сообщения Telegram.
+    #
+    # Каждый новый экспорт начинается с:
+    #
+    # [28.08.2026 23:31] Имя:
+    # -----------------------------------------------------
+
+    message_pattern = re.compile(
+        r'(?=\[\d{1,2}\.\d{1,2}\.\d{4}\s+'
+        r'\d{1,2}:\d{2}\])'
+    )
+
+    messages = message_pattern.split(
+        text
+    )
+
+    for message in messages:
+
+        message = message.strip()
+
+        if not message:
+            continue
+
+        # -------------------------------------------------
+        # Ищем блок ОТВЕТ
+        # -------------------------------------------------
+
+        answer_marker = re.search(
+            r'\[\s*\**ОТВЕТ\**\s*\]'
+            r'\([^)]+\)'
+            r'\s*\**\s*:?',
+            message,
+            flags=re.IGNORECASE
+        )
+
+        if not answer_marker:
+
+            # Иногда бывает просто:
+            #
+            # ОТВЕТ:
+            #
+            answer_marker = re.search(
+                r'\bОТВЕТ\s*:\s*',
+                message,
+                flags=re.IGNORECASE
+            )
+
+        if not answer_marker:
+            continue
+
+        question_part = message[
+            :answer_marker.start()
+        ]
+
+        answer_part = message[
+            answer_marker.end():
+        ]
+
+        # -------------------------------------------------
+        # Очищаем вопрос
+        # -------------------------------------------------
+
+        question = clean_question(
+            question_part
+        )
+
+        # -------------------------------------------------
+        # Очищаем ответ
+        # -------------------------------------------------
+
+        answer = clean_answer(
+            answer_part
+        )
+
+        if not question or not answer:
+            continue
+
+        # -------------------------------------------------
+        # Пытаемся определить номер задания.
+        #
+        # В новом формате отдельного номера может не быть.
+        # Поэтому сначала ищем:
+        #
+        # "Вопрос 15"
+        # "Задание 15"
+        #
+        # Если его нет — позже номер будет назначен
+        # автоматически.
+        # -------------------------------------------------
+
+        number_match = re.search(
+            r'(?:Вопрос|Задание)\s+(\d+)',
+            question,
+            flags=re.IGNORECASE
+        )
+
+        if number_match:
+
+            number = int(
+                number_match.group(1)
+            )
+
+            question = re.sub(
+                r'^\s*(?:Вопрос|Задание)\s+\d+\s*:\s*',
+                '',
+                question,
+                flags=re.IGNORECASE
+            )
+
+        else:
+
+            number = None
+
+        questions.append(
+            (
+                number,
+                question,
+                answer
+            )
+        )
+
+    # -----------------------------------------------------
+    # Назначаем номера тем заданиям,
+    # где номера в исходнике отсутствовали.
+    # -----------------------------------------------------
+
+    used_numbers = {
+        item[0]
+        for item in questions
+        if item[0] is not None
+    }
+
+    next_number = 1
+
+    result = []
+
+    for number, question, answer in questions:
+
+        if number is None:
+
+            while next_number in used_numbers:
+                next_number += 1
+
+            number = next_number
+
+            used_numbers.add(
+                number
+            )
+
+            next_number += 1
+
+        result.append(
+            (
+                number,
+                question,
+                answer
+            )
+        )
+
+    return result
+
+
+def parse_old_format(text: str):
+    """
+    Старый формат:
+
+    Вопрос 1:
+    ...
+    
+    Ответ:
+    ...
+    """
+
+    questions = []
+
+    pattern = re.compile(
+        r'Вопрос\s+(\d+)\s*:\s*'
+        r'(.*?)'
+        r'\bОтвет\s*:\s*'
+        r'(.*?)'
+        r'(?=\n\s*Вопрос\s+\d+\s*:|\Z)',
+        re.IGNORECASE | re.DOTALL
+    )
+
+    for match in pattern.finditer(text):
+
+        number = int(
+            match.group(1)
+        )
+
+        question = clean_question(
+            match.group(2)
+        )
+
+        answer = clean_answer(
+            match.group(3)
+        )
+
+        if question and answer:
+
+            questions.append(
+                (
+                    number,
+                    question,
+                    answer
+                )
+            )
+
+    return questions
+
+
+def parse_questions(text: str):
+    """
+    ГЛАВНЫЙ ПАРСЕР.
+
+    Автоматически определяет:
+    1. Старый формат "Вопрос → Ответ"
+    2. Новый Telegram-экспорт
+    """
 
     if not text:
         return []
@@ -641,87 +1126,30 @@ def parse_questions(text: str):
         "\n"
     )
 
-    pattern = re.compile(
-        r"Вопрос\s+(\d+)\s*:\s*"
-        r"(.*?)"
-        r"\bОтвет\s*:\s*"
-        r"(.*?)"
-        r"(?=\n\s*Вопрос\s+\d+\s*:|\Z)",
-        re.IGNORECASE | re.DOTALL
+    # -----------------------------------------------------
+    # Сначала пробуем новый формат.
+    # -----------------------------------------------------
+
+    new_questions = parse_new_format(
+        text
     )
 
-    questions = []
+    # -----------------------------------------------------
+    # Если нашли — возвращаем его.
+    # -----------------------------------------------------
 
-    for match in pattern.finditer(text):
+    if new_questions:
+        return new_questions
 
-        number = int(
-            match.group(1)
-        )
+    # -----------------------------------------------------
+    # Иначе пробуем старый формат.
+    # -----------------------------------------------------
 
-        question = match.group(2).strip()
+    old_questions = parse_old_format(
+        text
+    )
 
-        answer = match.group(3).strip()
-
-        question = re.sub(
-            r"\n\s*",
-            " ",
-            question
-        )
-
-        question = re.sub(
-            r"\s+",
-            " ",
-            question
-        )
-
-        question = question.strip()
-
-        answer = re.sub(
-            r"Получил\s+сообщение\s*:?",
-            "",
-            answer,
-            flags=re.IGNORECASE
-        )
-
-        answer = re.sub(
-            r"^\s*Получил\s+сообщение\s*:?\s*",
-            "",
-            answer,
-            flags=re.IGNORECASE
-        )
-
-        answer = re.sub(
-            r"\s*Получил\s+сообщение\s*:?\s*$",
-            "",
-            answer,
-            flags=re.IGNORECASE
-        )
-
-        answer = "\n".join(
-            line.rstrip()
-            for line in answer.split("\n")
-        )
-
-        answer = re.sub(
-            r"\n\s*\n+",
-            "\n",
-            answer
-        )
-
-        answer = answer.strip()
-
-        if question and answer:
-
-            questions.append(
-                (
-                    number,
-                    question,
-                    answer
-                )
-            )
-
-    return questions
-
+    return old_questions
 
 # =========================================================
 # МОБИЛЬНЫЙ ФОРМАТ
