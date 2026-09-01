@@ -42,9 +42,21 @@ SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
 
 OWNER_ID = os.getenv("OWNER_ID")
 
-PORT = int(os.environ.get("PORT", 10000))
+PORT = int(
+    os.environ.get("PORT", 10000)
+)
 
+
+# Максимальный размер одного сообщения Telegram
 MAX_MESSAGE_LENGTH = 3900
+
+
+# Максимальное количество сообщений за один ввод
+MAX_INPUT_MESSAGES = 50
+
+
+# Максимальное количество символов за один ввод
+MAX_INPUT_LENGTH = 100000
 
 
 # =========================================================
@@ -61,11 +73,13 @@ def get_supabase():
     if supabase is None:
 
         if not SUPABASE_URL:
+
             raise ValueError(
                 "Не задана переменная SUPABASE_URL"
             )
 
         if not SUPABASE_SERVICE_KEY:
+
             raise ValueError(
                 "Не задана переменная SUPABASE_SERVICE_KEY"
             )
@@ -82,11 +96,17 @@ def get_supabase():
 # ПАМЯТЬ
 # =========================================================
 
+# Временные сообщения пользователя
 user_buffers = {}
 
+# ID последнего сообщения с кнопкой "Завершить ввод"
 user_last_control_message = {}
 
+# Последний обработанный текст пользователя
 user_last_texts = {}
+
+# Последние распознанные задания
+user_last_questions = {}
 
 
 # =========================================================
@@ -121,7 +141,7 @@ def hash_password(password):
 
 
 # =========================================================
-# СОЗДАНИЕ 10 ПАРОЛЕЙ
+# СОЗДАНИЕ ПАРОЛЕЙ
 # =========================================================
 
 def initialize_passwords():
@@ -147,9 +167,13 @@ def initialize_passwords():
             return
 
         existing_texts = {
+
             row.get("password_text")
+
             for row in existing
+
             if row.get("password_text")
+
         }
 
         needed = 10 - len(existing)
@@ -174,6 +198,7 @@ def initialize_passwords():
                 "bot_passwords"
             ).insert(
                 {
+
                     "password_hash":
                         hash_password(password),
 
@@ -188,19 +213,20 @@ def initialize_passwords():
 
                     "used_at":
                         None,
+
                 }
             ).execute()
 
         print("")
         print("=" * 50)
-        print("🔐 НОВЫЕ ПАРОЛИ ДОСТУПА")
+        print("🔐 НОВЫЕ ПАРОЛИ")
         print("=" * 50)
 
         for password in generated:
+
             print(password)
 
         print("=" * 50)
-        print("")
 
     except Exception as error:
 
@@ -221,24 +247,33 @@ def is_authorized(telegram_id):
     try:
 
         result = (
+
             db.table("bot_users")
+
             .select("authorized")
+
             .eq(
                 "telegram_id",
                 telegram_id
             )
+
             .limit(1)
+
             .execute()
+
         )
 
         if not result.data:
+
             return False
 
         return bool(
+
             result.data[0].get(
                 "authorized",
                 False
             )
+
         )
 
     except Exception as error:
@@ -255,35 +290,46 @@ def is_authorized(telegram_id):
 # СОЗДАНИЕ ПОЛЬЗОВАТЕЛЯ
 # =========================================================
 
-def create_user_if_needed(telegram_id):
+def create_user_if_needed(
+    telegram_id
+):
 
     db = get_supabase()
 
     try:
 
         result = (
+
             db.table("bot_users")
+
             .select("telegram_id")
+
             .eq(
                 "telegram_id",
                 telegram_id
             )
+
             .limit(1)
+
             .execute()
+
         )
 
         if result.data:
+
             return
 
         db.table(
             "bot_users"
         ).insert(
             {
+
                 "telegram_id":
                     telegram_id,
 
                 "authorized":
                     False
+
             }
         ).execute()
 
@@ -296,10 +342,13 @@ def create_user_if_needed(telegram_id):
 
 
 # =========================================================
-# ПРОВЕРКА ПАРОЛЯ
+# ИСПОЛЬЗОВАНИЕ ПАРОЛЯ
 # =========================================================
 
-def use_password(password, telegram_id):
+def use_password(
+    password,
+    telegram_id
+):
 
     db = get_supabase()
 
@@ -312,44 +361,66 @@ def use_password(password, telegram_id):
     try:
 
         result = (
+
             db.table("bot_passwords")
+
             .select(
                 "id,used,password_text"
             )
+
             .eq(
                 "password_hash",
                 password_hash
             )
+
             .limit(1)
+
             .execute()
+
         )
 
         if not result.data:
+
             return False, "wrong"
 
         row = result.data[0]
 
         if row.get("used"):
+
             return False, "used"
+
+        # Помечаем пароль использованным
 
         db.table(
             "bot_passwords"
         ).update(
             {
-                "used": True,
-                "used_by": telegram_id,
-                "used_at": "now()",
+
+                "used":
+                    True,
+
+                "used_by":
+                    telegram_id,
+
+                "used_at":
+                    "now()",
+
             }
         ).eq(
             "id",
             row["id"]
         ).execute()
 
+        # Авторизуем пользователя
+
         db.table(
             "bot_users"
         ).update(
             {
-                "authorized": True
+
+                "authorized":
+                    True
+
             }
         ).eq(
             "telegram_id",
@@ -379,11 +450,15 @@ def get_password_stats():
     try:
 
         result = (
+
             db.table("bot_passwords")
+
             .select(
                 "password_text,used,used_by"
             )
+
             .execute()
+
         )
 
         rows = result.data or []
@@ -391,9 +466,13 @@ def get_password_stats():
         total = len(rows)
 
         used = sum(
+
             1
+
             for row in rows
+
             if row.get("used")
+
         )
 
         free = total - used
@@ -421,10 +500,13 @@ def make_password_list():
     )
 
     result = (
+
         "🔐 <b>ПАРОЛИ ДОСТУПА</b>\n\n"
+
         f"Всего: <b>{total}</b>\n"
         f"Использовано: <b>{used}</b>\n"
         f"Свободно: <b>{free}</b>\n\n"
+
     )
 
     for index, row in enumerate(
@@ -444,12 +526,17 @@ def make_password_list():
             )
 
             result += (
+
                 f"🔴 {index}. "
+
                 f"<s>{password}</s>"
-                f" — использован"
+
+                " — использован"
+
             )
 
             if used_by:
+
                 result += (
                     f" ({used_by})"
                 )
@@ -459,21 +546,26 @@ def make_password_list():
         else:
 
             result += (
+
                 f"🟢 {index}. "
+
                 f"<code>{password}</code>"
-                f" — свободен\n"
+
+                " — свободен\n"
+
             )
 
     return result
 
 
 # =========================================================
-# ВЛАДЕЛЕЦ
+# ПРОВЕРКА ВЛАДЕЛЬЦА
 # =========================================================
 
 def is_owner(telegram_id):
 
     if not OWNER_ID:
+
         return False
 
     return str(
@@ -484,637 +576,98 @@ def is_owner(telegram_id):
 
 
 # =========================================================
-# ГЛАВНОЕ МЕНЮ
-# =========================================================
-
-def get_main_menu(user_id):
-
-    buttons = [
-
-        [
-            InlineKeyboardButton(
-                "📝 Начать ввод",
-                callback_data="menu_start"
-            )
-        ],
-
-        [
-            InlineKeyboardButton(
-                "📋 Последние ответы",
-                callback_data="menu_last"
-            )
-        ],
-
-        [
-            InlineKeyboardButton(
-                "🔄 Новый ввод",
-                callback_data="menu_new"
-            ),
-
-            InlineKeyboardButton(
-                "ℹ️ Помощь",
-                callback_data="menu_help"
-            )
-        ],
-    ]
-
-    # Кнопки владельца
-    if is_owner(user_id):
-
-        buttons.append(
-            [
-                InlineKeyboardButton(
-                    "🔐 Пароли",
-                    callback_data="menu_keys"
-                ),
-
-                InlineKeyboardButton(
-                    "📊 Статистика",
-                    callback_data="menu_stats"
-                )
-            ]
-        )
-
-    return InlineKeyboardMarkup(
-        buttons
-    )
-
-
-# =========================================================
-# КНОПКА НАЗАД
-# =========================================================
-
-def get_back_keyboard():
-
-    return InlineKeyboardMarkup(
-        [
-            [
-                InlineKeyboardButton(
-                    "🔙 Главное меню",
-                    callback_data="menu_main"
-                )
-            ]
-        ]
-    )
-
-
-# =========================================================
-# КНОПКА ЗАВЕРШИТЬ ВВОД
+# КЛАВИАТУРА "ЗАВЕРШИТЬ ВВОД"
 # =========================================================
 
 def get_finish_keyboard():
 
     return InlineKeyboardMarkup(
+
         [
+
             [
+
                 InlineKeyboardButton(
+
                     "⏹ Завершить ввод",
+
                     callback_data="finish_input"
+
                 )
+
             ]
+
         ]
+
     )
 
 
 # =========================================================
-# КНОПКИ РЕЗУЛЬТАТА
+# КЛАВИАТУРА РЕЗУЛЬТАТА
 # =========================================================
 
 def get_result_keyboard():
 
     return InlineKeyboardMarkup(
+
         [
 
             [
+
                 InlineKeyboardButton(
+
                     "📱 Удобно",
+
                     callback_data="mobile"
+
                 ),
 
                 InlineKeyboardButton(
+
                     "📝 Список",
+
                     callback_data="list"
+
                 ),
+
             ],
 
             [
+
                 InlineKeyboardButton(
+
                     "⚡ Только ответы",
+
                     callback_data="compact"
+
                 ),
 
                 InlineKeyboardButton(
+
                     "🔄 Заново",
+
                     callback_data="repeat"
+
                 ),
+
             ],
 
-            [
-                InlineKeyboardButton(
-                    "🏠 Главное меню",
-                    callback_data="menu_main"
-                )
-            ]
-
         ]
+
     )
 
 
 # =========================================================
-# УНИВЕРСАЛЬНЫЙ РАЗБОР ВОПРОСОВ И ОТВЕТОВ
+# ОЧИСТКА ТЕКСТА
 # =========================================================
 
-def clean_markdown(text: str):
-    """
-    Убирает техническое форматирование Markdown/Telegram,
-    но оставляет сам текст.
-    """
-
-    # Удаляем markdown-ссылки:
-    # [текст](https://...)
-    text = re.sub(
-        r'\[([^\]]+)\]\([^)]+\)',
-        r'\1',
-        text
-    )
-
-    # Удаляем голые URL
-    text = re.sub(
-        r'https?://\S+',
-        '',
-        text
-    )
-
-    # Убираем жирный/курсив/код
-    text = re.sub(
-        r'(\*\*|__|\*|_|`)',
-        '',
-        text
-    )
-
-    # Убираем экранированные символы
-    text = text.replace(
-        r'\_',
-        '_'
-    )
-
-    text = text.replace(
-        r'\.',
-        '.'
-    )
-
-    return text
-
-
-def clean_question(text: str):
-    """
-    Очищает текст вопроса от:
-    - даты и имени;
-    - ссылок;
-    - служебного текста;
-    - лишних пустых строк.
-    """
-
-    text = text.strip()
-
-    # -----------------------------------------------------
-    # Удаляем заголовок экспорта Telegram
-    #
-    # [28.08.2026 23:31] Kirill Rem:
-    # -----------------------------------------------------
-
-    text = re.sub(
-        r'^\s*\[\d{1,2}\.\d{1,2}\.\d{4}\s+'
-        r'\d{1,2}:\d{2}\]\s*'
-        r'[^:]+:\s*',
-        '',
-        text,
-        flags=re.IGNORECASE
-    )
-
-    # -----------------------------------------------------
-    # Удаляем ссылки
-    # -----------------------------------------------------
-
-    text = re.sub(
-        r'https?://\S+',
-        '',
-        text
-    )
-
-    # -----------------------------------------------------
-    # Удаляем markdown
-    # -----------------------------------------------------
-
-    text = clean_markdown(text)
-
-    # -----------------------------------------------------
-    # Удаляем технический текст
-    # -----------------------------------------------------
-
-    text = re.sub(
-        r'Получил\s+сообщение\s*:?',
-        '',
-        text,
-        flags=re.IGNORECASE
-    )
-
-    # -----------------------------------------------------
-    # Убираем лишние пустые строки
-    # -----------------------------------------------------
-
-    lines = []
-
-    for line in text.splitlines():
-
-        line = line.strip()
-
-        if not line:
-            continue
-
-        lines.append(line)
-
-    text = "\n".join(lines)
-
-    # -----------------------------------------------------
-    # В большинстве заданий после ссылки идут варианты.
-    #
-    # Если ссылка была между вопросом и вариантами,
-    # сохраняем сам вопрос, а техническую часть убираем.
-    # -----------------------------------------------------
-
-    # Убираем строки, которые выглядят как голые номера
-    # типа:
-    #
-    # 1
-    # 2
-    #
-    # Они обычно являются частью изображения/таблицы.
-    text = re.sub(
-        r'(?m)^\s*\d+\s*$',
-        '',
-        text
-    )
-
-    # Повторная очистка пустых строк
-    text = re.sub(
-        r'\n{2,}',
-        '\n',
-        text
-    )
-
-    text = text.strip()
-
-    return text
-
-
-def clean_answer(text: str):
-    """
-    Очищает ответ от:
-    - [ОТВЕТ](...)
-    - ссылок;
-    - markdown;
-    - Получил сообщение:
-    """
-
-    text = text.strip()
-
-    # -----------------------------------------------------
-    # Удаляем служебную конструкцию [ОТВЕТ](...)
-    # -----------------------------------------------------
-
-    text = re.sub(
-        r'\[\s*\**ОТВЕТ\**\s*\]'
-        r'\([^)]+\)'
-        r'\s*\**\s*:?\s*',
-        '',
-        text,
-        flags=re.IGNORECASE
-    )
-
-    # -----------------------------------------------------
-    # Удаляем "ОТВЕТ:"
-    # -----------------------------------------------------
-
-    text = re.sub(
-        r'^\s*\**\s*ОТВЕТ\s*\**\s*:?\s*',
-        '',
-        text,
-        flags=re.IGNORECASE
-    )
-
-    # -----------------------------------------------------
-    # Удаляем "Получил сообщение:"
-    # -----------------------------------------------------
-
-    text = re.sub(
-        r'Получил\s+сообщение\s*:?',
-        '',
-        text,
-        flags=re.IGNORECASE
-    )
-
-    # -----------------------------------------------------
-    # Удаляем markdown-ссылки
-    # -----------------------------------------------------
-
-    text = re.sub(
-        r'\[([^\]]+)\]\([^)]+\)',
-        r'\1',
-        text
-    )
-
-    # -----------------------------------------------------
-    # Удаляем голые ссылки
-    # -----------------------------------------------------
-
-    text = re.sub(
-        r'https?://\S+',
-        '',
-        text
-    )
-
-    # -----------------------------------------------------
-    # Удаляем markdown
-    # -----------------------------------------------------
-
-    text = re.sub(
-        r'(\*\*|__|\*|_|`)',
-        '',
-        text
-    )
-
-    # -----------------------------------------------------
-    # Убираем лишние пробелы
-    # -----------------------------------------------------
-
-    lines = []
-
-    for line in text.splitlines():
-
-        line = line.strip()
-
-        if not line:
-            continue
-
-        # Убираем стрелочные маркеры "»"
-        line = re.sub(
-            r'^\s*[»•]\s*',
-            '',
-            line
-        )
-
-        lines.append(line)
-
-    text = "\n".join(lines)
-
-    text = re.sub(
-        r'\n{2,}',
-        '\n',
-        text
-    )
-
-    return text.strip()
-
-def parse_new_format(text: str):
-    """
-    Разбирает новый формат экспорта Telegram:
-
-    [дата время] Имя:
-    Вопрос...
-
-    [ОТВЕТ](...)**:**
-    ответ
-
-    Возвращает:
-    (номер, вопрос, ответ)
-    """
-
-    questions = []
-
-    # -----------------------------------------------------
-    # Сначала разделяем сообщения Telegram.
-    #
-    # Каждый новый экспорт начинается с:
-    #
-    # [28.08.2026 23:31] Имя:
-    # -----------------------------------------------------
-
-    message_pattern = re.compile(
-        r'(?=\[\d{1,2}\.\d{1,2}\.\d{4}\s+'
-        r'\d{1,2}:\d{2}\])'
-    )
-
-    messages = message_pattern.split(
-        text
-    )
-
-    for message in messages:
-
-        message = message.strip()
-
-        if not message:
-            continue
-
-        # -------------------------------------------------
-        # Ищем блок ОТВЕТ
-        # -------------------------------------------------
-
-        answer_marker = re.search(
-            r'\[\s*\**ОТВЕТ\**\s*\]'
-            r'\([^)]+\)'
-            r'\s*\**\s*:?',
-            message,
-            flags=re.IGNORECASE
-        )
-
-        if not answer_marker:
-
-            # Иногда бывает просто:
-            #
-            # ОТВЕТ:
-            #
-            answer_marker = re.search(
-                r'\bОТВЕТ\s*:\s*',
-                message,
-                flags=re.IGNORECASE
-            )
-
-        if not answer_marker:
-            continue
-
-        question_part = message[
-            :answer_marker.start()
-        ]
-
-        answer_part = message[
-            answer_marker.end():
-        ]
-
-        # -------------------------------------------------
-        # Очищаем вопрос
-        # -------------------------------------------------
-
-        question = clean_question(
-            question_part
-        )
-
-        # -------------------------------------------------
-        # Очищаем ответ
-        # -------------------------------------------------
-
-        answer = clean_answer(
-            answer_part
-        )
-
-        if not question or not answer:
-            continue
-
-        # -------------------------------------------------
-        # Пытаемся определить номер задания.
-        #
-        # В новом формате отдельного номера может не быть.
-        # Поэтому сначала ищем:
-        #
-        # "Вопрос 15"
-        # "Задание 15"
-        #
-        # Если его нет — позже номер будет назначен
-        # автоматически.
-        # -------------------------------------------------
-
-        number_match = re.search(
-            r'(?:Вопрос|Задание)\s+(\d+)',
-            question,
-            flags=re.IGNORECASE
-        )
-
-        if number_match:
-
-            number = int(
-                number_match.group(1)
-            )
-
-            question = re.sub(
-                r'^\s*(?:Вопрос|Задание)\s+\d+\s*:\s*',
-                '',
-                question,
-                flags=re.IGNORECASE
-            )
-
-        else:
-
-            number = None
-
-        questions.append(
-            (
-                number,
-                question,
-                answer
-            )
-        )
-
-    # -----------------------------------------------------
-    # Назначаем номера тем заданиям,
-    # где номера в исходнике отсутствовали.
-    # -----------------------------------------------------
-
-    used_numbers = {
-        item[0]
-        for item in questions
-        if item[0] is not None
-    }
-
-    next_number = 1
-
-    result = []
-
-    for number, question, answer in questions:
-
-        if number is None:
-
-            while next_number in used_numbers:
-                next_number += 1
-
-            number = next_number
-
-            used_numbers.add(
-                number
-            )
-
-            next_number += 1
-
-        result.append(
-            (
-                number,
-                question,
-                answer
-            )
-        )
-
-    return result
-
-
-def parse_old_format(text: str):
-    """
-    Старый формат:
-
-    Вопрос 1:
-    ...
-    
-    Ответ:
-    ...
-    """
-
-    questions = []
-
-    pattern = re.compile(
-        r'Вопрос\s+(\d+)\s*:\s*'
-        r'(.*?)'
-        r'\bОтвет\s*:\s*'
-        r'(.*?)'
-        r'(?=\n\s*Вопрос\s+\d+\s*:|\Z)',
-        re.IGNORECASE | re.DOTALL
-    )
-
-    for match in pattern.finditer(text):
-
-        number = int(
-            match.group(1)
-        )
-
-        question = clean_question(
-            match.group(2)
-        )
-
-        answer = clean_answer(
-            match.group(3)
-        )
-
-        if question and answer:
-
-            questions.append(
-                (
-                    number,
-                    question,
-                    answer
-                )
-            )
-
-    return questions
-
-
-def parse_questions(text: str):
-    """
-    ГЛАВНЫЙ ПАРСЕР.
-
-    Автоматически определяет:
-    1. Старый формат "Вопрос → Ответ"
-    2. Новый Telegram-экспорт
-    """
+def clean_input_text(text):
 
     if not text:
-        return []
+
+        return ""
+
+    # Windows переносы
 
     text = text.replace(
         "\r\n",
@@ -1126,30 +679,665 @@ def parse_questions(text: str):
         "\n"
     )
 
+
     # -----------------------------------------------------
-    # Сначала пробуем новый формат.
+    # Удаляем "Получил сообщение"
     # -----------------------------------------------------
 
-    new_questions = parse_new_format(
+    text = re.sub(
+
+        r"Получил\s+сообщение\s*:?",
+
+        "",
+
+        text,
+
+        flags=re.IGNORECASE
+
+    )
+
+
+    # -----------------------------------------------------
+    # Удаляем Markdown-ссылки
+    #
+    # [текст](ссылка)
+    # -----------------------------------------------------
+
+    text = re.sub(
+
+        r"\[([^\]]+)\]\([^)]+\)",
+
+        r"\1",
+
+        text
+
+    )
+
+
+    # -----------------------------------------------------
+    # Удаляем обычные ссылки
+    # -----------------------------------------------------
+
+    text = re.sub(
+
+        r"https?://\S+",
+
+        "",
+
+        text
+
+    )
+
+
+    # -----------------------------------------------------
+    # Убираем Markdown жирный
+    # -----------------------------------------------------
+
+    text = text.replace(
+        "**",
+        ""
+    )
+
+    text = text.replace(
+        "__",
+        ""
+    )
+
+
+    # -----------------------------------------------------
+    # Убираем обратные кавычки
+    # -----------------------------------------------------
+
+    text = text.replace(
+        "`",
+        ""
+    )
+
+
+    # -----------------------------------------------------
+    # Убираем Telegram-экспорт:
+    #
+    # [28.08.2026 23:31] Kirill Rem:
+    # -----------------------------------------------------
+
+    text = re.sub(
+
+        r"^\s*\[\d{1,2}\.\d{1,2}\.\d{4}"
+        r"\s+\d{1,2}:\d{2}\]"
+        r"\s*[^:\n]{0,100}:\s*",
+
+        "",
+
+        text,
+
+        flags=re.MULTILINE
+
+    )
+
+
+    # -----------------------------------------------------
+    # Удаляем лишние пустые строки
+    # -----------------------------------------------------
+
+    text = re.sub(
+
+        r"\n[ \t]+\n",
+
+        "\n\n",
+
+        text
+
+    )
+
+    text = re.sub(
+
+        r"\n{4,}",
+
+        "\n\n\n",
+
+        text
+
+    )
+
+    return text.strip()
+
+
+# =========================================================
+# ОЧИСТКА ОТВЕТА
+# =========================================================
+
+def clean_answer(answer):
+
+    if not answer:
+
+        return ""
+
+    answer = answer.strip()
+
+
+    # Убираем маркеры ответа
+
+    answer = re.sub(
+
+        r"^(ОТВЕТ|Ответ)\s*:?\s*",
+
+        "",
+
+        answer,
+
+        flags=re.IGNORECASE
+
+    )
+
+
+    # Убираем пустые строки
+
+    lines = []
+
+    for line in answer.split("\n"):
+
+        line = line.rstrip()
+
+        if line.strip():
+
+            lines.append(line)
+
+    answer = "\n".join(lines)
+
+    return answer.strip()
+
+
+# =========================================================
+# ОЧИСТКА ВОПРОСА
+# =========================================================
+
+def clean_question(question):
+
+    if not question:
+
+        return ""
+
+    question = question.strip()
+
+
+    # Удаляем "Вопрос 1:"
+
+    question = re.sub(
+
+        r"^\s*Вопрос\s+\d+\s*:?\s*",
+
+        "",
+
+        question,
+
+        flags=re.IGNORECASE
+
+    )
+
+
+    # Удаляем номер вида "1."
+
+    question = re.sub(
+
+        r"^\s*\d+\s*[\.\)]\s*",
+
+        "",
+
+        question
+
+    )
+
+
+    lines = []
+
+    for line in question.split("\n"):
+
+        line = line.strip()
+
+        if line:
+
+            lines.append(line)
+
+    question = "\n".join(lines)
+
+    return question.strip()
+
+
+# =========================================================
+# РАЗДЕЛЕНИЕ ТЕКСТА НА ЗАДАНИЯ
+# =========================================================
+
+def split_by_telegram_messages(text):
+
+    """
+    Пытаемся разделить большой текст
+    по Telegram-временным меткам.
+    """
+
+    pattern = re.compile(
+
+        r"(?="
+        r"\[\d{1,2}\.\d{1,2}\.\d{4}"
+        r"\s+\d{1,2}:\d{2}\]"
+        r")"
+
+    )
+
+    parts = pattern.split(text)
+
+    result = []
+
+    for part in parts:
+
+        part = part.strip()
+
+        if part:
+
+            result.append(part)
+
+    return result
+
+
+# =========================================================
+# ПАРСЕР ФОРМАТА:
+#
+# Вопрос:
+# ...
+#
+# Ответ:
+# ...
+# =========================================================
+
+def parse_question_answer_format(text):
+
+    questions = []
+
+    pattern = re.compile(
+
+        r"(?:^|\n)"
+
+        r"\s*(?:Вопрос\s*)?"
+
+        r"(\d+)?"
+
+        r"\s*:?\s*"
+
+        r"(.*?)"
+
+        r"\n\s*(?:ОТВЕТ|Ответ)\s*:?\s*"
+
+        r"(.*?)"
+
+        r"(?="
+
+        r"\n\s*(?:Вопрос\s+\d+\s*:)"
+        r"|"
+        r"\n\s*\[\d{1,2}\.\d{1,2}\.\d{4}"
+        r"|"
+        r"\Z"
+
+        r")",
+
+        re.IGNORECASE | re.DOTALL
+
+    )
+
+
+    for match in pattern.finditer(text):
+
+        number = match.group(1)
+
+        question = match.group(2)
+
+        answer = match.group(3)
+
+
+        question = clean_question(
+            question
+        )
+
+        answer = clean_answer(
+            answer
+        )
+
+
+        if question and answer:
+
+            questions.append(
+
+                (
+
+                    number,
+
+                    question,
+
+                    answer
+
+                )
+
+            )
+
+    return questions
+
+
+# =========================================================
+# ПАРСЕР TELEGRAM-ФОРМАТА
+# =========================================================
+
+def parse_telegram_format(text):
+
+    questions = []
+
+
+    # Находим ОТВЕТ
+
+    answer_pattern = re.compile(
+
+        r"(?:^|\n)"
+
+        r"(?:\[)?ОТВЕТ(?:\])?"
+
+        r"\s*:?\s*"
+
+        r"(.*)",
+
+        re.IGNORECASE | re.DOTALL
+
+    )
+
+
+    match = answer_pattern.search(
         text
     )
 
-    # -----------------------------------------------------
-    # Если нашли — возвращаем его.
-    # -----------------------------------------------------
 
-    if new_questions:
-        return new_questions
+    if not match:
 
-    # -----------------------------------------------------
-    # Иначе пробуем старый формат.
-    # -----------------------------------------------------
+        return []
 
-    old_questions = parse_old_format(
+
+    question_part = text[
+        :match.start()
+    ].strip()
+
+
+    answer_part = match.group(1).strip()
+
+
+    question_part = clean_question(
+        question_part
+    )
+
+
+    answer_part = clean_answer(
+        answer_part
+    )
+
+
+    if question_part and answer_part:
+
+        questions.append(
+
+            (
+
+                None,
+
+                question_part,
+
+                answer_part
+
+            )
+
+        )
+
+
+    return questions
+
+
+# =========================================================
+# ГЛАВНЫЙ УНИВЕРСАЛЬНЫЙ ПАРСЕР
+# =========================================================
+
+def parse_questions(text):
+
+    text = clean_input_text(
         text
     )
 
-    return old_questions
+    if not text:
+
+        return []
+
+
+    # -----------------------------------------------------
+    # Сначала пытаемся разделить Telegram-сообщения
+    # -----------------------------------------------------
+
+    telegram_parts = (
+        split_by_telegram_messages(
+            text
+        )
+    )
+
+
+    all_questions = []
+
+
+    # Если Telegram-разделение нашло несколько сообщений
+
+    if len(telegram_parts) > 1:
+
+        for part in telegram_parts:
+
+            cleaned_part = clean_input_text(
+                part
+            )
+
+
+            parsed = parse_question_answer_format(
+                cleaned_part
+            )
+
+
+            if not parsed:
+
+                parsed = parse_telegram_format(
+                    cleaned_part
+                )
+
+
+            if parsed:
+
+                all_questions.extend(
+                    parsed
+                )
+
+
+        if all_questions:
+
+            return normalize_questions(
+                all_questions
+            )
+
+
+    # -----------------------------------------------------
+    # Пробуем обычный формат
+    # -----------------------------------------------------
+
+    parsed = parse_question_answer_format(
+        text
+    )
+
+
+    if parsed:
+
+        return normalize_questions(
+            parsed
+        )
+
+
+    # -----------------------------------------------------
+    # Пробуем разделение вручную
+    # -----------------------------------------------------
+
+    parts = re.split(
+
+        r"(?i)"
+        r"(?:\n|\A)"
+        r"\s*(?:\[)?ОТВЕТ(?:\])?"
+        r"\s*:\s*",
+
+        text
+
+    )
+
+
+    if len(parts) >= 2:
+
+        question = parts[0].strip()
+
+        answer = "\n".join(
+            parts[1:]
+        ).strip()
+
+
+        question = clean_question(
+            question
+        )
+
+        answer = clean_answer(
+            answer
+        )
+
+
+        if question and answer:
+
+            return [
+
+                (
+
+                    None,
+
+                    question,
+
+                    answer
+
+                )
+
+            ]
+
+
+    return []
+
+
+# =========================================================
+# НОРМАЛИЗАЦИЯ НОМЕРОВ
+# =========================================================
+
+def normalize_questions(questions):
+
+    result = []
+
+
+    used_numbers = set()
+
+
+    next_number = 1
+
+
+    for number, question, answer in questions:
+
+
+        # Если номер отсутствует
+
+        if number is None:
+
+            while next_number in used_numbers:
+
+                next_number += 1
+
+            number = next_number
+
+
+        else:
+
+            try:
+
+                number = int(number)
+
+            except Exception:
+
+                while next_number in used_numbers:
+
+                    next_number += 1
+
+                number = next_number
+
+
+        # Если номер уже существует,
+        # всё равно сохраняем задание,
+        # но даём следующий свободный номер
+
+        if number in used_numbers:
+
+            while next_number in used_numbers:
+
+                next_number += 1
+
+            number = next_number
+
+
+        used_numbers.add(
+            number
+        )
+
+
+        next_number = max(
+            next_number,
+            number + 1
+        )
+
+
+        result.append(
+
+            (
+
+                number,
+
+                question,
+
+                answer
+
+            )
+
+        )
+
+
+    return result
+
+
+# =========================================================
+# ФОРМАТИРОВАНИЕ ЦИТАТЫ
+# =========================================================
+
+def make_quote(text):
+
+    lines = text.split("\n")
+
+    result = []
+
+    for line in lines:
+
+        line = line.strip()
+
+        if line:
+
+            result.append(
+                f"<blockquote>{html.escape(line)}</blockquote>"
+            )
+
+    return "\n".join(result)
+
 
 # =========================================================
 # МОБИЛЬНЫЙ ФОРМАТ
@@ -1160,67 +1348,71 @@ def make_mobile(questions):
     if not questions:
 
         return (
+
             "❌ Не удалось найти "
             "вопросы и ответы."
+
         )
 
+
     parts = [
-        "📝 <b>ОТВЕТЫ</b>"
+
+        "🤖 <b>РЕЗУЛЬТАТЫ</b>"
+
     ]
 
-    for number, question, answer in questions:
+
+    for index, (
+        number,
+        question,
+        answer
+
+    ) in enumerate(
+
+        questions,
+
+        start=1
+
+    ):
+
 
         safe_question = html.escape(
             question
         )
 
-        safe_answer = html.escape(
+
+        quote = make_quote(
             answer
         )
 
-        answer_lines = (
-            safe_answer.split("\n")
-        )
-
-        formatted_answer = []
-
-        for index, line in enumerate(
-            answer_lines
-        ):
-
-            if index == 0:
-
-                formatted_answer.append(
-                    f"✅ {line}"
-                )
-
-            else:
-
-                formatted_answer.append(
-                    f"   {line}"
-                )
-
-        formatted_answer = "\n".join(
-            formatted_answer
-        )
 
         block = (
-            f"❓ <b>{number}. "
-            f"{safe_question}</b>\n\n"
-            f"{formatted_answer}"
+
+            f"🧩 <b>ЗАДАНИЕ {index}</b>\n\n"
+
+            f"❓ <b>ВОПРОС</b>\n"
+
+            f"{safe_question}\n\n"
+
+            f"💬 <b>ОТВЕТ</b>\n"
+
+            f"{quote}"
+
         )
+
 
         parts.append(
             block
         )
 
-    return "\n\n\n".join(
+
+    return "\n\n━━━━━━━━━━━━━━━━\n\n".join(
         parts
     )
 
 
 # =========================================================
-# СПИСОК
+# ФОРМАТ "СПИСОК"
 # =========================================================
 
 def make_list(questions):
@@ -1228,40 +1420,65 @@ def make_list(questions):
     if not questions:
 
         return (
+
             "❌ Не удалось найти "
             "вопросы и ответы."
+
         )
+
 
     parts = []
 
-    for number, question, answer in questions:
+
+    for index, (
+
+        number,
+        question,
+        answer
+
+    ) in enumerate(
+
+        questions,
+
+        start=1
+
+    ):
+
 
         safe_question = html.escape(
             question
         )
 
-        clean_answer = answer.replace(
-            "\n",
-            " "
-        )
 
-        clean_answer = re.sub(
+        clean_answer_text = re.sub(
+
             r"\s+",
-            " ",
-            clean_answer
-        )
 
-        clean_answer = clean_answer.strip()
+            " ",
+
+            answer.replace(
+                "\n",
+                " "
+            )
+
+        ).strip()
+
 
         safe_answer = html.escape(
-            clean_answer
+            clean_answer_text
         )
 
+
         parts.append(
-            f"<b>{number}. "
-            f"{safe_question}</b>\n"
-            f"→ {safe_answer}"
+
+            f"🧩 <b>{index}.</b> "
+
+            f"<b>{safe_question}</b>\n"
+
+            f"💬 {safe_answer}"
+
         )
+
 
     return "\n\n".join(
         parts
@@ -1277,175 +1494,67 @@ def make_compact(questions):
     if not questions:
 
         return (
+
             "❌ Не удалось найти "
             "вопросы и ответы."
+
         )
+
 
     parts = []
 
-    for number, question, answer in questions:
 
-        clean_answer = answer.replace(
-            "\n",
-            " "
+    for index, (
+
+        number,
+        question,
+        answer
+
+    ) in enumerate(
+
+        questions,
+
+        start=1
+
+    ):
+
+
+        answer = answer.strip()
+
+
+        lines = answer.split("\n")
+
+
+        formatted = []
+
+
+        for line in lines:
+
+            line = line.strip()
+
+            if line:
+
+                formatted.append(
+                    html.escape(line)
+                )
+
+
+        answer_text = "\n".join(
+            formatted
         )
 
-        clean_answer = re.sub(
-            r"\s+",
-            " ",
-            clean_answer
-        )
-
-        clean_answer = clean_answer.strip()
 
         parts.append(
-            f"<b>{number}.</b> "
-            f"{html.escape(clean_answer)}"
+
+            f"🧩 <b>{index}.</b>\n"
+
+            f"{make_quote(answer_text)}"
+
         )
 
-    return "\n".join(
+
+    return "\n\n".join(
         parts
-    )
-
-
-# =========================================================
-# ГЛАВНОЕ МЕНЮ
-# =========================================================
-
-async def show_main_menu(
-    message,
-    user_id,
-    edit=False
-):
-
-    text = (
-        "💋<b>Админский бот 1387</b>\n\n"
-        "Добро пожаловать!\n\n"
-        "Выбери нужное действие:"
-    )
-
-    keyboard = get_main_menu(
-        user_id
-    )
-
-    if edit:
-
-        await message.edit_text(
-            text,
-            parse_mode="HTML",
-            reply_markup=keyboard
-        )
-
-    else:
-
-        await message.reply_text(
-            text,
-            parse_mode="HTML",
-            reply_markup=keyboard
-        )
-
-
-# =========================================================
-# ПОМОЩЬ
-# =========================================================
-
-async def show_help(
-    message,
-    edit=False
-):
-
-    text = (
-        "ℹ️ <b>Как пользоваться ботом</b>\n\n"
-
-        "1️⃣ Нажми <b>📝 Начать ввод</b>.\n\n"
-
-        "2️⃣ Отправь одно или несколько "
-        "сообщений с заданиями.\n\n"
-
-        "3️⃣ Когда закончишь отправлять "
-        "сообщения, нажми "
-        "<b>⏹ Завершить ввод</b>.\n\n"
-
-        "4️⃣ Бот соберёт все вопросы и "
-        "ответы в одно удобное сообщение.\n\n"
-
-        "После обработки можно выбрать "
-        "нужный формат отображения."
-    )
-
-    keyboard = get_back_keyboard()
-
-    if edit:
-
-        await message.edit_text(
-            text,
-            parse_mode="HTML",
-            reply_markup=keyboard
-        )
-
-    else:
-
-        await message.reply_text(
-            text,
-            parse_mode="HTML",
-            reply_markup=keyboard
-        )
-
-
-# =========================================================
-# НАЧАТЬ НОВЫЙ ВВОД
-# =========================================================
-
-async def start_input(
-    message,
-    user_id,
-    context
-):
-
-    # Полностью очищаем старый ввод
-    user_buffers[user_id] = []
-
-    old_message_id = (
-        user_last_control_message.get(
-            user_id
-        )
-    )
-
-    if old_message_id:
-
-        try:
-
-            await context.bot.edit_message_reply_markup(
-                chat_id=message.chat_id,
-                message_id=old_message_id,
-                reply_markup=None
-            )
-
-        except Exception:
-            pass
-
-    user_last_control_message.pop(
-        user_id,
-        None
-    )
-
-    text = (
-        "📝 <b>Режим ввода включён</b>\n\n"
-        "Теперь отправляй мне одно или "
-        "несколько сообщений с вопросами "
-        "и ответами.\n\n"
-        "Когда закончишь — нажми "
-        "<b>⏹ Завершить ввод</b>."
-    )
-
-    await message.edit_text(
-        text,
-        parse_mode="HTML",
-        reply_markup=get_finish_keyboard()
-    )
-
-    user_last_control_message[user_id] = (
-        message.message_id
     )
 
 
@@ -1454,37 +1563,65 @@ async def start_input(
 # =========================================================
 
 async def start(
+
     update: Update,
+
     context: ContextTypes.DEFAULT_TYPE
+
 ):
 
     if not update.effective_user:
+
         return
+
 
     user_id = (
         update.effective_user.id
     )
 
+
     create_user_if_needed(
         user_id
     )
 
+
     if is_authorized(user_id):
 
-        await show_main_menu(
-            update.message,
-            user_id
+        await update.message.reply_text(
+
+            "🤖 <b>Админский бот!</b>\n\n"
+
+            "✅ <b>Доступ разрешён!</b>\n\n"
+
+            "📥 Отправляй одно или несколько "
+            "сообщений с заданиями.\n\n"
+
+            "После окончания нажми:\n"
+
+            "⏹ <b>Завершить ввод</b>",
+
+            parse_mode="HTML"
+
         )
 
         return
 
+
     await update.message.reply_text(
+
+        "🤖 <b>Админский бот!</b>\n\n"
+
         "🔐 <b>Требуется пароль</b>\n\n"
+
         "Для использования бота введи "
-        "выданный тебе пароль.\n\n"
+        "выданный пароль.\n\n"
+
         "Формат:\n"
+
         "<code>XXXX-XXXX</code>",
+
         parse_mode="HTML"
+
     )
 
 
@@ -1493,18 +1630,26 @@ async def start(
 # =========================================================
 
 async def get_id(
+
     update: Update,
+
     context: ContextTypes.DEFAULT_TYPE
+
 ):
 
     user_id = (
         update.effective_user.id
     )
 
+
     await update.message.reply_text(
-        f"🆔 Твой Telegram ID:\n\n"
+
+        "🆔 <b>Твой Telegram ID</b>\n\n"
+
         f"<code>{user_id}</code>",
+
         parse_mode="HTML"
+
     )
 
 
@@ -1513,202 +1658,427 @@ async def get_id(
 # =========================================================
 
 async def keys_command(
+
     update: Update,
+
     context: ContextTypes.DEFAULT_TYPE
+
 ):
 
     user_id = (
         update.effective_user.id
     )
+
 
     if not is_owner(user_id):
 
         await update.message.reply_text(
+
             "⛔ Эта команда доступна "
             "только владельцу бота."
+
         )
 
         return
+
 
     result = make_password_list()
 
+
     await update.message.reply_text(
+
         result,
+
         parse_mode="HTML"
+
     )
 
 
 # =========================================================
-# СТАТИСТИКА
-# =========================================================
-
-async def show_stats(
-    message,
-    edit=False
-):
-
-    rows, total, used, free = (
-        get_password_stats()
-    )
-
-    text = (
-        "📊 <b>СТАТИСТИКА</b>\n\n"
-        f"🔐 Всего паролей: <b>{total}</b>\n"
-        f"🔴 Использовано: <b>{used}</b>\n"
-        f"🟢 Свободно: <b>{free}</b>\n"
-    )
-
-    keyboard = get_back_keyboard()
-
-    if edit:
-
-        await message.edit_text(
-            text,
-            parse_mode="HTML",
-            reply_markup=keyboard
-        )
-
-    else:
-
-        await message.reply_text(
-            text,
-            parse_mode="HTML",
-            reply_markup=keyboard
-        )
-
-
-# =========================================================
-# ТЕКСТОВЫЕ СООБЩЕНИЯ
+# ПОЛУЧЕНИЕ ТЕКСТА
 # =========================================================
 
 async def echo(
+
     update: Update,
+
     context: ContextTypes.DEFAULT_TYPE
+
 ):
 
     if not update.message:
+
         return
 
+
     if not update.message.text:
+
         return
+
 
     user_id = (
         update.effective_user.id
     )
+
 
     chat_id = (
         update.effective_chat.id
     )
 
+
     text = update.message.text.strip()
 
+
     # -----------------------------------------------------
-    # АВТОРИЗАЦИЯ
+    # ПРОВЕРКА АВТОРИЗАЦИИ
     # -----------------------------------------------------
 
     if not is_authorized(user_id):
+
 
         create_user_if_needed(
             user_id
         )
 
+
         success, status = use_password(
+
             text,
+
             user_id
+
         )
+
 
         if success:
 
             await update.message.reply_text(
-                "✅ <b>Пароль принят!</b>\n\n"
-                "Доступ к боту открыт.",
-                parse_mode="HTML"
-            )
 
-            await show_main_menu(
-                update.message,
-                user_id
+                "🤖 <b>Админский бот!</b>\n\n"
+
+                "✅ <b>Пароль принят!</b>\n\n"
+
+                "Теперь можешь отправлять "
+                "задания.",
+
+                parse_mode="HTML"
+
             )
 
             return
+
 
         if status == "used":
 
             await update.message.reply_text(
+
                 "❌ Этот пароль уже использован.\n\n"
+
                 "Получи новый пароль."
+
             )
 
             return
+
 
         if status == "error":
 
             await update.message.reply_text(
-                "⚠️ Ошибка при проверке "
-                "пароля."
+
+                "⚠️ Ошибка при проверке пароля.\n\n"
+
+                "Попробуй ещё раз."
+
             )
 
             return
 
+
         await update.message.reply_text(
-            "❌ Неверный пароль.\n\n"
-            "Введите действующий пароль:\n\n"
+
+            "❌ <b>Неверный пароль.</b>\n\n"
+
+            "Введите пароль в формате:\n\n"
+
             "<code>XXXX-XXXX</code>",
+
             parse_mode="HTML"
+
         )
 
         return
 
+
     # -----------------------------------------------------
-    # ДОБАВЛЯЕМ СООБЩЕНИЕ
+    # СОЗДАНИЕ БУФЕРА
     # -----------------------------------------------------
 
     if user_id not in user_buffers:
 
         user_buffers[user_id] = []
 
+
+    # -----------------------------------------------------
+    # ПРОВЕРКА КОЛИЧЕСТВА СООБЩЕНИЙ
+    # -----------------------------------------------------
+
+    if len(user_buffers[user_id]) >= MAX_INPUT_MESSAGES:
+
+        await update.message.reply_text(
+
+            f"⚠️ Достигнут лимит: "
+
+            f"<b>{MAX_INPUT_MESSAGES}</b> сообщений.\n\n"
+
+            "Нажми «⏹ Завершить ввод».",
+
+            parse_mode="HTML"
+
+        )
+
+        return
+
+
+    # -----------------------------------------------------
+    # ПРОВЕРКА ОБЩЕГО РАЗМЕРА
+    # -----------------------------------------------------
+
+    current_length = sum(
+
+        len(message)
+
+        for message in user_buffers[user_id]
+
+    )
+
+
+    if (
+
+        current_length + len(text)
+
+        > MAX_INPUT_LENGTH
+
+    ):
+
+        await update.message.reply_text(
+
+            "⚠️ Достигнут лимит "
+            "размера текста.\n\n"
+
+            "Нажми «⏹ Завершить ввод».",
+
+            parse_mode="HTML"
+
+        )
+
+        return
+
+
+    # -----------------------------------------------------
+    # ДОБАВЛЯЕМ СООБЩЕНИЕ
+    # -----------------------------------------------------
+
     user_buffers[user_id].append(
         text
     )
 
+
     # -----------------------------------------------------
-    # Убираем кнопку со старого сообщения
+    # УДАЛЯЕМ СТАРУЮ КНОПКУ
     # -----------------------------------------------------
 
     old_message_id = (
+
         user_last_control_message.get(
             user_id
         )
+
     )
+
 
     if old_message_id:
 
         try:
 
             await context.bot.edit_message_reply_markup(
+
                 chat_id=chat_id,
+
                 message_id=old_message_id,
+
                 reply_markup=None
+
             )
 
-        except Exception:
-            pass
+        except Exception as error:
+
+            print(
+                "Ошибка удаления старой кнопки:",
+                error
+            )
+
 
     # -----------------------------------------------------
-    # Новое последнее сообщение
+    # СОЗДАЁМ НОВУЮ КНОПКУ
     # -----------------------------------------------------
+
+    count = len(
+        user_buffers[user_id]
+    )
+
 
     control_message = (
+
         await context.bot.send_message(
+
             chat_id=chat_id,
-            text="⏳ Ответы собираются...",
+
+            text=(
+                "📥 <b>Сообщение добавлено!</b>\n\n"
+
+                f"📦 Получено сообщений: "
+                f"<b>{count}</b>\n\n"
+
+                "Можешь отправить ещё сообщения "
+                "или завершить ввод."
+            ),
+
+            parse_mode="HTML",
+
             reply_markup=get_finish_keyboard()
+
         )
+
     )
 
+
     user_last_control_message[user_id] = (
+
         control_message.message_id
+
     )
+
+
+# =========================================================
+# РАЗДЕЛЕНИЕ ДЛИННОГО ТЕКСТА
+# =========================================================
+
+def split_long_text(text):
+
+    if len(text) <= MAX_MESSAGE_LENGTH:
+
+        return [text]
+
+
+    separator = (
+        "\n\n━━━━━━━━━━━━━━━━\n\n"
+    )
+
+
+    blocks = text.split(
+        separator
+    )
+
+
+    result = []
+
+    current = ""
+
+
+    for block in blocks:
+
+
+        if not current:
+
+            current = block
+
+            continue
+
+
+        if (
+
+            len(current)
+
+            + len(separator)
+
+            + len(block)
+
+            <= MAX_MESSAGE_LENGTH
+
+        ):
+
+            current += (
+
+                separator
+
+                + block
+
+            )
+
+        else:
+
+            result.append(
+                current
+            )
+
+            current = block
+
+
+    if current:
+
+        result.append(
+            current
+        )
+
+
+    return result
+
+
+# =========================================================
+# ОТПРАВКА ДЛИННОГО РЕЗУЛЬТАТА
+# =========================================================
+
+async def send_result(
+
+    bot,
+
+    chat_id,
+
+    result
+
+):
+
+    messages = split_long_text(
+        result
+    )
+
+
+    for index, message_text in enumerate(
+        messages
+    ):
+
+
+        keyboard = None
+
+
+        if index == len(messages) - 1:
+
+            keyboard = (
+                get_result_keyboard()
+            )
+
+
+        await bot.send_message(
+
+            chat_id=chat_id,
+
+            text=message_text,
+
+            parse_mode="HTML",
+
+            reply_markup=keyboard
+
+        )
 
 
 # =========================================================
@@ -1716,524 +2086,378 @@ async def echo(
 # =========================================================
 
 async def finish_input(
+
     update: Update,
+
     context: ContextTypes.DEFAULT_TYPE
+
 ):
 
     query = update.callback_query
 
+
     if not query:
+
         return
+
 
     user_id = (
         query.from_user.id
     )
 
+
     if not is_authorized(user_id):
 
         await query.answer(
+
             "⛔ Нет доступа.",
+
             show_alert=True
+
         )
 
         return
 
+
     await query.answer(
-        "Обрабатываю..."
+        "🔍 Обрабатываю..."
     )
 
-    chat_id = query.message.chat_id
+
+    chat_id = (
+        query.message.chat_id
+    )
+
 
     messages = user_buffers.get(
+
         user_id,
+
         []
+
     )
+
 
     if not messages:
 
         await query.message.edit_text(
-            "⚠️ Нет накопленных сообщений.",
-            reply_markup=get_back_keyboard()
+
+            "⚠️ Нет накопленных сообщений."
+
         )
 
         return
+
+
+    # -----------------------------------------------------
+    # ОБЪЕДИНЯЕМ СООБЩЕНИЯ
+    # -----------------------------------------------------
 
     combined_text = "\n\n".join(
         messages
     )
 
+
+    # -----------------------------------------------------
+    # РАСПОЗНАЁМ ЗАДАНИЯ
+    # -----------------------------------------------------
+
     questions = parse_questions(
         combined_text
     )
 
+
     if not questions:
 
+
         await query.message.edit_text(
-            "❌ Я не смог найти пары "
-            "«Вопрос → Ответ».\n\n"
-            "Проверь формат входных сообщений.",
-            reply_markup=get_back_keyboard()
+
+            "❌ <b>Не удалось распознать задания.</b>\n\n"
+
+            "Бот не смог найти пары:\n"
+
+            "❓ Вопрос\n"
+            "💬 Ответ\n\n"
+
+            "Попробуй проверить формат текста.",
+
+            parse_mode="HTML"
+
         )
+
 
         user_buffers[user_id] = []
 
         return
 
+
+    # -----------------------------------------------------
+    # СОХРАНЯЕМ ДАННЫЕ
+    # -----------------------------------------------------
+
     user_last_texts[user_id] = (
         combined_text
     )
 
+
+    user_last_questions[user_id] = (
+        questions
+    )
+
+
+    # -----------------------------------------------------
+    # ОЧИЩАЕМ БУФЕР
+    # -----------------------------------------------------
+
     user_buffers[user_id] = []
 
+
     user_last_control_message.pop(
+
         user_id,
+
         None
+
     )
+
+
+    # -----------------------------------------------------
+    # ФОРМИРУЕМ РЕЗУЛЬТАТ
+    # -----------------------------------------------------
 
     result = make_mobile(
         questions
     )
 
+
+    # -----------------------------------------------------
+    # ЕСЛИ РЕЗУЛЬТАТ ПОМЕЩАЕТСЯ
+    # -----------------------------------------------------
+
     if len(result) <= MAX_MESSAGE_LENGTH:
 
         await query.message.edit_text(
+
             result,
+
             parse_mode="HTML",
+
             reply_markup=get_result_keyboard()
+
         )
 
         return
+
+
+    # -----------------------------------------------------
+    # ЕСЛИ РЕЗУЛЬТАТ ДЛИННЫЙ
+    # -----------------------------------------------------
 
     try:
 
         await query.message.delete()
 
     except Exception:
+
         pass
 
-    blocks = result.split(
-        "\n\n\n"
+
+    await send_result(
+
+        context.bot,
+
+        chat_id,
+
+        result
+
     )
-
-    current = ""
-
-    for block in blocks:
-
-        if not current:
-
-            current = block
-
-        elif (
-            len(current)
-            + len(block)
-            + 3
-            <= MAX_MESSAGE_LENGTH
-        ):
-
-            current += (
-                "\n\n\n"
-                + block
-            )
-
-        else:
-
-            await context.bot.send_message(
-                chat_id=chat_id,
-                text=current,
-                parse_mode="HTML"
-            )
-
-            current = block
-
-    if current:
-
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text=current,
-            parse_mode="HTML",
-            reply_markup=get_result_keyboard()
-        )
 
 
 # =========================================================
-# КНОПКИ
+# ОБРАБОТЧИК КНОПОК
 # =========================================================
 
 async def button_handler(
+
     update: Update,
+
     context: ContextTypes.DEFAULT_TYPE
+
 ):
 
     query = update.callback_query
 
+
     if not query:
+
         return
+
+
+    # -----------------------------------------------------
+    # ЗАВЕРШИТЬ ВВОД
+    # -----------------------------------------------------
+
+    if query.data == "finish_input":
+
+        await finish_input(
+
+            update,
+
+            context
+
+        )
+
+        return
+
+
+    await query.answer()
+
 
     user_id = (
         query.from_user.id
     )
 
-    action = query.data
 
-    # =====================================================
-    # ГЛАВНОЕ МЕНЮ
-    # =====================================================
+    if not is_authorized(user_id):
 
-    if action == "menu_main":
+        await query.message.reply_text(
 
-        await query.answer()
+            "⛔ У тебя нет доступа."
 
-        if not is_authorized(user_id):
-
-            await query.message.edit_text(
-                "⛔ У тебя нет доступа."
-            )
-
-            return
-
-        await show_main_menu(
-            query.message,
-            user_id,
-            edit=True
         )
 
         return
 
-    # =====================================================
-    # НАЧАТЬ ВВОД
-    # =====================================================
 
-    if action in (
-        "menu_start",
-        "menu_new"
-    ):
+    # -----------------------------------------------------
+    # ПОЛУЧАЕМ ПОСЛЕДНИЕ ЗАДАНИЯ
+    # -----------------------------------------------------
 
-        await query.answer()
+    questions = user_last_questions.get(
+        user_id
+    )
 
-        if not is_authorized(user_id):
 
-            await query.answer(
-                "⛔ Нет доступа.",
-                show_alert=True
-            )
+    if not questions:
 
-            return
-
-        await start_input(
-            query.message,
-            user_id,
-            context
-        )
-
-        return
-
-    # =====================================================
-    # ПОМОЩЬ
-    # =====================================================
-
-    if action == "menu_help":
-
-        await query.answer()
-
-        await show_help(
-            query.message,
-            edit=True
-        )
-
-        return
-
-    # =====================================================
-    # ПАРОЛИ
-    # =====================================================
-
-    if action == "menu_keys":
-
-        await query.answer()
-
-        if not is_owner(user_id):
-
-            await query.answer(
-                "⛔ Нет доступа.",
-                show_alert=True
-            )
-
-            return
-
-        result = make_password_list()
-
-        await query.message.edit_text(
-            result,
-            parse_mode="HTML",
-            reply_markup=get_back_keyboard()
-        )
-
-        return
-
-    # =====================================================
-    # СТАТИСТИКА
-    # =====================================================
-
-    if action == "menu_stats":
-
-        await query.answer()
-
-        if not is_owner(user_id):
-
-            await query.answer(
-                "⛔ Нет доступа.",
-                show_alert=True
-            )
-
-            return
-
-        await show_stats(
-            query.message,
-            edit=True
-        )
-
-        return
-
-    # =====================================================
-    # ПОСЛЕДНИЕ ОТВЕТЫ
-    # =====================================================
-
-    if action == "menu_last":
-
-        await query.answer()
-
-        if not is_authorized(user_id):
-
-            await query.answer(
-                "⛔ Нет доступа.",
-                show_alert=True
-            )
-
-            return
 
         text = user_last_texts.get(
             user_id
         )
 
-        if not text:
 
-            await query.message.edit_text(
-                "📋 <b>Последних ответов пока нет.</b>\n\n"
-                "Сначала обработай какой-нибудь "
-                "набор заданий.",
-                parse_mode="HTML",
-                reply_markup=get_back_keyboard()
+        if text:
+
+            questions = parse_questions(
+                text
             )
 
-            return
 
-        questions = parse_questions(
-            text
+    if not questions:
+
+        await query.message.reply_text(
+
+            "⚠️ Исходные данные не найдены.\n\n"
+
+            "Пришли задания ещё раз."
+
         )
 
-        if not questions:
+        return
 
-            await query.message.edit_text(
-                "❌ Не удалось восстановить "
-                "последние ответы.",
-                reply_markup=get_back_keyboard()
-            )
 
-            return
+    action = query.data
+
+
+    # -----------------------------------------------------
+    # ВЫБОР ФОРМАТА
+    # -----------------------------------------------------
+
+    if action == "mobile":
 
         result = make_mobile(
             questions
         )
 
-        if len(result) <= MAX_MESSAGE_LENGTH:
+
+    elif action == "list":
+
+        result = make_list(
+            questions
+        )
+
+
+    elif action == "compact":
+
+        result = make_compact(
+            questions
+        )
+
+
+    elif action == "repeat":
+
+        result = make_mobile(
+            questions
+        )
+
+
+    else:
+
+        return
+
+
+    # -----------------------------------------------------
+    # ЕСЛИ РЕЗУЛЬТАТ КОРОТКИЙ
+    # -----------------------------------------------------
+
+    if len(result) <= MAX_MESSAGE_LENGTH:
+
+        try:
 
             await query.message.edit_text(
+
                 result,
+
                 parse_mode="HTML",
+
                 reply_markup=get_result_keyboard()
+
             )
 
-        else:
+        except Exception as error:
 
-            await query.message.edit_text(
-                "📋 Последние ответы слишком "
-                "большие для одного сообщения.\n\n"
-                "Отправь задания заново.",
-                reply_markup=get_back_keyboard()
+            print(
+                "Ошибка изменения сообщения:",
+                error
             )
 
         return
 
-    # =====================================================
-    # ЗАВЕРШИТЬ ВВОД
-    # =====================================================
 
-    if action == "finish_input":
-
-        await finish_input(
-            update,
-            context
-        )
-
-        return
-
-    # =====================================================
-    # НИЖЕ — КНОПКИ ФОРМАТА
-    # =====================================================
-
-    await query.answer()
-
-    if not is_authorized(user_id):
-
-        await query.message.reply_text(
-            "⛔ У тебя нет доступа к боту."
-        )
-
-        return
-
-    text = user_last_texts.get(
-        user_id
-    )
-
-    if not text:
-
-        await query.message.reply_text(
-            "⚠️ Исходные данные не найдены.\n\n"
-            "Пришли задания ещё раз."
-        )
-
-        return
+    # -----------------------------------------------------
+    # ДЛИННЫЙ РЕЗУЛЬТАТ
+    # -----------------------------------------------------
 
     try:
 
-        questions = parse_questions(
-            text
+        await query.message.edit_reply_markup(
+            reply_markup=None
         )
 
-        if not questions:
+    except Exception:
 
-            await query.message.reply_text(
-                "❌ Не удалось разобрать "
-                "исходные данные."
-            )
-
-            return
-
-        if action == "mobile":
-
-            result = make_mobile(
-                questions
-            )
-
-        elif action == "list":
-
-            result = make_list(
-                questions
-            )
-
-        elif action == "compact":
-
-            result = make_compact(
-                questions
-            )
-
-        elif action == "repeat":
-
-            result = make_mobile(
-                questions
-            )
-
-        else:
-
-            return
-
-        if len(result) <= MAX_MESSAGE_LENGTH:
-
-            await query.message.edit_text(
-                result,
-                parse_mode="HTML",
-                reply_markup=get_result_keyboard()
-            )
-
-        else:
-
-            await send_long_message(
-                query.message,
-                result,
-                reply_markup=get_result_keyboard()
-            )
-
-    except Exception as error:
-
-        print(
-            "Ошибка кнопки:",
-            error
-        )
-
-        await query.message.reply_text(
-            "❌ Не удалось изменить формат."
-        )
+        pass
 
 
-# =========================================================
-# ДЛИННОЕ СООБЩЕНИЕ
-# =========================================================
+    await send_result(
 
-async def send_long_message(
-    message,
-    text,
-    reply_markup=None
-):
+        context.bot,
 
-    if len(text) <= MAX_MESSAGE_LENGTH:
+        query.message.chat_id,
 
-        await message.reply_text(
-            text,
-            parse_mode="HTML",
-            reply_markup=reply_markup
-        )
+        result
 
-        return
-
-    blocks = text.split(
-        "\n\n\n"
     )
-
-    current = ""
-
-    for block in blocks:
-
-        if not current:
-
-            current = block
-
-        elif (
-            len(current)
-            + len(block)
-            + 3
-            <= MAX_MESSAGE_LENGTH
-        ):
-
-            current += (
-                "\n\n\n"
-                + block
-            )
-
-        else:
-
-            await message.reply_text(
-                current,
-                parse_mode="HTML"
-            )
-
-            current = block
-
-    if current:
-
-        await message.reply_text(
-            current,
-            parse_mode="HTML",
-            reply_markup=reply_markup
-        )
 
 
 # =========================================================
@@ -2241,49 +2465,78 @@ async def send_long_message(
 # =========================================================
 
 telegram_app = (
+
     Application.builder()
+
     .token(BOT_TOKEN)
+
     .updater(None)
+
     .build()
+
 )
 
 
 telegram_app.add_handler(
+
     CommandHandler(
+
         "start",
+
         start
+
     )
+
 )
 
 
 telegram_app.add_handler(
+
     CommandHandler(
+
         "id",
+
         get_id
+
     )
+
 )
 
 
 telegram_app.add_handler(
+
     CommandHandler(
+
         "keys",
+
         keys_command
+
     )
+
 )
 
 
 telegram_app.add_handler(
+
     MessageHandler(
+
         filters.TEXT & ~filters.COMMAND,
+
         echo
+
     )
+
 )
 
 
 telegram_app.add_handler(
+
     CallbackQueryHandler(
+
         button_handler
+
     )
+
 )
 
 
@@ -2292,19 +2545,28 @@ telegram_app.add_handler(
 # =========================================================
 
 async def telegram_webhook(
+
     request: Request
+
 ) -> Response:
+
 
     data = await request.json()
 
+
     update = Update.de_json(
+
         data,
+
         telegram_app.bot
+
     )
+
 
     await telegram_app.update_queue.put(
         update
     )
+
 
     return Response("OK")
 
@@ -2314,11 +2576,16 @@ async def telegram_webhook(
 # =========================================================
 
 async def health(
+
     request: Request
+
 ) -> PlainTextResponse:
 
+
     return PlainTextResponse(
+
         "Bot is running!"
+
     )
 
 
@@ -2327,6 +2594,7 @@ async def health(
 # =========================================================
 
 web_app = Starlette(
+
     routes=[
 
         Route(
@@ -2340,11 +2608,17 @@ web_app = Starlette(
         ),
 
         Route(
+
             "/telegram",
+
             telegram_webhook,
+
             methods=["POST"]
+
         ),
+
     ]
+
 )
 
 
@@ -2354,63 +2628,105 @@ web_app = Starlette(
 
 async def main():
 
+
     if not BOT_TOKEN:
+
         raise ValueError(
-            "Не задана переменная BOT_TOKEN"
+            "Не задана BOT_TOKEN"
         )
+
 
     if not RENDER_URL:
+
         raise ValueError(
-            "Не задана переменная RENDER_URL"
+            "Не задана RENDER_URL"
         )
 
+
     if not SUPABASE_URL:
+
         raise ValueError(
             "Не задана SUPABASE_URL"
         )
 
+
     if not SUPABASE_SERVICE_KEY:
+
         raise ValueError(
             "Не задана SUPABASE_SERVICE_KEY"
         )
 
+
     if not OWNER_ID:
+
         raise ValueError(
             "Не задана OWNER_ID"
         )
 
+
+    # -----------------------------------------------------
+    # СОЗДАЁМ ПАРОЛИ
+    # -----------------------------------------------------
+
     initialize_passwords()
+
+
+    # -----------------------------------------------------
+    # TELEGRAM
+    # -----------------------------------------------------
 
     await telegram_app.initialize()
 
     await telegram_app.start()
 
+
+    # -----------------------------------------------------
+    # WEBHOOK
+    # -----------------------------------------------------
+
     await telegram_app.bot.set_webhook(
+
         url=f"{RENDER_URL}/telegram",
+
         allowed_updates=Update.ALL_TYPES
+
     )
 
+
+    # -----------------------------------------------------
+    # UVICORN
+    # -----------------------------------------------------
+
     config = uvicorn.Config(
+
         web_app,
+
         host="0.0.0.0",
+
         port=PORT
+
     )
+
 
     server = uvicorn.Server(
         config
     )
 
+
     print(
         f"Бот запущен на порту {PORT}"
     )
+
 
     print(
         f"Webhook: {RENDER_URL}/telegram"
     )
 
+
     try:
 
         await server.serve()
+
 
     finally:
 
