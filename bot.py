@@ -1,4 +1,3 @@
-```python
 import os
 import asyncio
 import re
@@ -2178,4 +2177,3 @@ async def main():
 if __name__ == "__main__":
 
     asyncio.run(main())
-```
