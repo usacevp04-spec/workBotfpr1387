@@ -31,204 +31,128 @@ from telegram.ext import (
 from supabase import create_client, Client
 
 
-# =========================================================
-# НАСТРОЙКИ
-# =========================================================
+# ============================================================
+# CONFIG
+# ============================================================
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-RENDER_URL = os.getenv("RENDER_URL")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "")
+RENDER_URL = os.getenv("RENDER_URL", "").rstrip("/")
 
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
+SUPABASE_URL = os.getenv("SUPABASE_URL", "")
+SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY", "")
 
-OWNER_ID = os.getenv("OWNER_ID")
+OWNER_ID = os.getenv("OWNER_ID", "")
 
-PORT = int(os.environ.get("PORT", 10000))
+PORT = int(os.getenv("PORT", "10000"))
 
 MAX_MESSAGE_LENGTH = 3900
 MAX_INPUT_MESSAGES = 50
 MAX_INPUT_LENGTH = 100000
 
-SKYSMART_API_URL = (
-    "https://skysmart-answers.vercel.app/get_answers/"
-)
+SKYSMART_API_URL = "https://skysmart-answers.vercel.app/get_answers/"
 
 
-# =========================================================
-# SUPABASE
-# =========================================================
+# ============================================================
+# GLOBALS
+# ============================================================
 
 supabase: Client | None = None
+telegram_app: Application | None = None
+
+user_buffers: dict[int, list[str]] = {}
+user_last_control_message: dict[int, int] = {}
+user_last_texts: dict[int, list[dict]] = {}
+
+user_last_skysmart_data: dict[int, dict] = {}
 
 
-def get_supabase():
+# ============================================================
+# SUPABASE
+# ============================================================
 
+def init_supabase():
     global supabase
 
-    if supabase is None:
+    if not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
+        print("WARNING: Supabase environment variables are missing")
+        return
 
-        if not SUPABASE_URL:
-            raise ValueError(
-                "Не задана переменная SUPABASE_URL"
-            )
-
-        if not SUPABASE_SERVICE_KEY:
-            raise ValueError(
-                "Не задана переменная SUPABASE_SERVICE_KEY"
-            )
-
-        supabase = create_client(
-            SUPABASE_URL,
-            SUPABASE_SERVICE_KEY
-        )
-
-    return supabase
-
-
-# =========================================================
-# ПАМЯТЬ
-# =========================================================
-
-user_buffers = {}
-
-user_last_control_message = {}
-
-user_last_texts = {}
-
-user_last_questions = {}
-
-# Skysmart
-user_last_skysmart_data = {}
-user_last_skysmart_room = {}
-
-
-# =========================================================
-# ПАРОЛИ
-# =========================================================
-
-def generate_password():
-
-    alphabet = (
-        "ABCDEFGHJKLMNPQRSTUVWXYZ"
-        "23456789"
+    supabase = create_client(
+        SUPABASE_URL,
+        SUPABASE_SERVICE_KEY
     )
 
-    first = "".join(
-        secrets.choice(alphabet)
-        for _ in range(4)
-    )
-
-    second = "".join(
-        secrets.choice(alphabet)
-        for _ in range(4)
-    )
-
-    return f"{first}-{second}"
+    print("Supabase initialized")
 
 
-def hash_password(password):
+# ============================================================
+# PASSWORDS
+# ============================================================
 
+def hash_password(password: str) -> str:
     return hashlib.sha256(
         password.encode("utf-8")
     ).hexdigest()
 
 
-def initialize_passwords():
+def generate_password() -> str:
+    alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 
-    db = get_supabase()
+    part1 = "".join(
+        secrets.choice(alphabet)
+        for _ in range(4)
+    )
+
+    part2 = "".join(
+        secrets.choice(alphabet)
+        for _ in range(4)
+    )
+
+    return f"{part1}-{part2}"
+
+
+def initialize_passwords():
+    if supabase is None:
+        return
 
     try:
-
         result = (
-            db.table("bot_passwords")
-            .select("id,password_text")
+            supabase
+            .table("bot_passwords")
+            .select("id")
+            .eq("used", False)
             .execute()
         )
 
-        existing = result.data or []
+        current_count = len(result.data or [])
 
-        if len(existing) >= 10:
-
-            print("Пароли уже существуют.")
-
-            return
-
-        existing_texts = {
-            row.get("password_text")
-            for row in existing
-            if row.get("password_text")
-        }
-
-        needed = 10 - len(existing)
-
-        generated = []
-
-        while len(generated) < needed:
-
+        while current_count < 10:
             password = generate_password()
 
-            if password in existing_texts:
-                continue
-
-            if password in generated:
-                continue
-
-            generated.append(password)
-
-        for password in generated:
-
-            db.table("bot_passwords").insert({
-
-                "password_hash": hash_password(
-                    password
-                ),
-
+            supabase.table("bot_passwords").insert({
+                "password_hash": hash_password(password),
                 "password_text": password,
-
                 "used": False,
-
-                "used_by": None,
-
-                "used_at": None,
-
             }).execute()
 
-        print("")
-        print("=" * 50)
-        print("🔐 НОВЫЕ ПАРОЛИ")
-        print("=" * 50)
+            current_count += 1
 
-        for password in generated:
+        print("Passwords initialized")
 
-            print(password)
-
-        print("=" * 50)
-
-    except Exception as error:
-
-        print(
-            "Ошибка создания паролей:",
-            error
-        )
+    except Exception as e:
+        print("Password initialization error:", e)
 
 
-# =========================================================
-# АВТОРИЗАЦИЯ
-# =========================================================
-
-def is_authorized(telegram_id):
-
-    db = get_supabase()
+def is_authorized(user_id: int) -> bool:
+    if supabase is None:
+        return False
 
     try:
-
         result = (
-            db.table("bot_users")
+            supabase
+            .table("bot_users")
             .select("authorized")
-            .eq(
-                "telegram_id",
-                telegram_id
-            )
+            .eq("telegram_id", user_id)
             .limit(1)
             .execute()
         )
@@ -237,389 +161,358 @@ def is_authorized(telegram_id):
             return False
 
         return bool(
-            result.data[0].get(
-                "authorized",
-                False
-            )
+            result.data[0].get("authorized", False)
         )
 
-    except Exception as error:
-
-        print(
-            "Ошибка проверки авторизации:",
-            error
-        )
-
+    except Exception as e:
+        print("Authorization check error:", e)
         return False
 
 
-def create_user_if_needed(telegram_id):
-
-    db = get_supabase()
+def create_user_if_needed(user_id: int):
+    if supabase is None:
+        return
 
     try:
-
         result = (
-            db.table("bot_users")
+            supabase
+            .table("bot_users")
             .select("telegram_id")
-            .eq(
-                "telegram_id",
-                telegram_id
-            )
-            .limit(1)
-            .execute()
-        )
-
-        if result.data:
-            return
-
-        db.table("bot_users").insert({
-
-            "telegram_id": telegram_id,
-
-            "authorized": False
-
-        }).execute()
-
-    except Exception as error:
-
-        print(
-            "Ошибка создания пользователя:",
-            error
-        )
-
-
-def use_password(password, telegram_id):
-
-    db = get_supabase()
-
-    password = password.strip().upper()
-
-    password_hash = hash_password(
-        password
-    )
-
-    try:
-
-        result = (
-            db.table("bot_passwords")
-            .select(
-                "id,used,password_text"
-            )
-            .eq(
-                "password_hash",
-                password_hash
-            )
+            .eq("telegram_id", user_id)
             .limit(1)
             .execute()
         )
 
         if not result.data:
-            return False, "wrong"
+            supabase.table("bot_users").insert({
+                "telegram_id": user_id,
+                "authorized": False,
+            }).execute()
 
-        row = result.data[0]
-
-        if row.get("used"):
-            return False, "used"
-
-        db.table("bot_passwords").update({
-
-            "used": True,
-
-            "used_by": telegram_id,
-
-            "used_at": "now()",
-
-        }).eq(
-            "id",
-            row["id"]
-        ).execute()
-
-        db.table("bot_users").update({
-
-            "authorized": True
-
-        }).eq(
-            "telegram_id",
-            telegram_id
-        ).execute()
-
-        return True, "success"
-
-    except Exception as error:
-
-        print(
-            "Ошибка проверки пароля:",
-            error
-        )
-
-        return False, "error"
+    except Exception as e:
+        print("Create user error:", e)
 
 
-# =========================================================
-# СТАТИСТИКА ПАРОЛЕЙ
-# =========================================================
+def use_password(password: str, user_id: int) -> bool:
+    if supabase is None:
+        return False
 
-def get_password_stats():
-
-    db = get_supabase()
+    password = password.strip().upper()
 
     try:
+        password_hash = hash_password(password)
 
         result = (
-            db.table("bot_passwords")
-            .select(
-                "password_text,used,used_by"
-            )
+            supabase
+            .table("bot_passwords")
+            .select("*")
+            .eq("password_hash", password_hash)
+            .eq("used", False)
+            .limit(1)
             .execute()
         )
 
-        rows = result.data or []
+        if not result.data:
+            return False
 
-        total = len(rows)
+        password_row = result.data[0]
 
-        used = sum(
-            1
-            for row in rows
-            if row.get("used")
+        supabase.table("bot_passwords").update({
+            "used": True,
+            "used_by": user_id,
+            "used_at": "now()",
+        }).eq(
+            "id",
+            password_row["id"]
+        ).execute()
+
+        create_user_if_needed(user_id)
+
+        supabase.table("bot_users").update({
+            "authorized": True,
+        }).eq(
+            "telegram_id",
+            user_id
+        ).execute()
+
+        return True
+
+    except Exception as e:
+        print("Use password error:", e)
+        return False
+
+
+def get_unused_passwords() -> list[str]:
+    if supabase is None:
+        return []
+
+    try:
+        result = (
+            supabase
+            .table("bot_passwords")
+            .select("password_text")
+            .eq("used", False)
+            .order("id")
+            .execute()
         )
 
-        free = total - used
+        return [
+            row["password_text"]
+            for row in (result.data or [])
+        ]
 
-        return (
-            rows,
-            total,
-            used,
-            free
-        )
-
-    except Exception as error:
-
-        print(
-            "Ошибка получения паролей:",
-            error
-        )
-
-        return [], 0, 0, 0
+    except Exception as e:
+        print("Get passwords error:", e)
+        return []
 
 
-def make_password_list():
+# ============================================================
+# TEXT HELPERS
+# ============================================================
 
-    rows, total, used, free = (
-        get_password_stats()
+def clean_input_text(text: str) -> str:
+    if not text:
+        return ""
+
+    text = str(text)
+
+    text = text.replace("\r\n", "\n")
+    text = text.replace("\r", "\n")
+
+    text = re.sub(
+        r"\n{3,}",
+        "\n\n",
+        text
     )
 
-    result = (
+    return text.strip()
 
-        "🔐 <b>ПАРОЛИ ДОСТУПА</b>\n\n"
 
-        f"Всего: <b>{total}</b>\n"
+def clean_answer(answer: str) -> str:
+    if not answer:
+        return ""
 
-        f"Использовано: <b>{used}</b>\n"
+    answer = str(answer)
 
-        f"Свободно: <b>{free}</b>\n\n"
-
+    answer = re.sub(
+        r"^\s*(ответ|answer)\s*:\s*",
+        "",
+        answer,
+        flags=re.IGNORECASE
     )
 
-    for index, row in enumerate(
-        rows,
-        start=1
-    ):
+    answer = re.sub(
+        r"Получил сообщение\s*",
+        "",
+        answer,
+        flags=re.IGNORECASE
+    )
 
-        password = row.get(
-            "password_text",
-            "???"
+    return answer.strip()
+
+
+def clean_question(question: str) -> str:
+    if not question:
+        return ""
+
+    question = str(question)
+
+    question = re.sub(
+        r"^\s*(вопрос|question)\s*\d*\s*[:.)-]?\s*",
+        "",
+        question,
+        flags=re.IGNORECASE
+    )
+
+    question = re.sub(
+        r"Получил сообщение\s*",
+        "",
+        question,
+        flags=re.IGNORECASE
+    )
+
+    return question.strip()
+
+
+# ============================================================
+# TELEGRAM MESSAGE SPLITTING
+# ============================================================
+
+def split_by_telegram_messages(text: str) -> list[str]:
+    if len(text) <= MAX_MESSAGE_LENGTH:
+        return [text]
+
+    chunks = []
+
+    while text:
+        chunk = text[:MAX_MESSAGE_LENGTH]
+
+        if len(text) > MAX_MESSAGE_LENGTH:
+            pos = chunk.rfind("\n")
+
+            if pos > 500:
+                chunk = chunk[:pos]
+
+        chunks.append(chunk)
+        text = text[len(chunk):]
+
+    return chunks
+
+
+async def send_long_message(
+    message,
+    text: str,
+    reply_markup=None
+):
+    chunks = split_by_telegram_messages(text)
+
+    for i, chunk in enumerate(chunks):
+        await message.reply_text(
+            chunk,
+            reply_markup=reply_markup if i == len(chunks) - 1 else None,
+            disable_web_page_preview=True
         )
 
-        if row.get("used"):
 
-            used_by = row.get(
-                "used_by"
-            )
+# ============================================================
+# ORDINARY TASK PARSER
+# ============================================================
 
-            result += (
+def normalize_line(line: str) -> str:
+    line = line.strip()
 
-                f"🔴 {index}. "
+    line = re.sub(
+        r"\s+",
+        " ",
+        line
+    )
 
-                f"<s>{password}</s>"
+    return line
 
-                " — использован"
 
-            )
+def is_probable_option_line(line: str) -> bool:
+    line = normalize_line(line)
 
-            if used_by:
+    patterns = [
+        r"^[A-HА-Н]\s*[\)\.:]\s*.+",
+        r"^[0-9]{1,2}\s*[\)\.:]\s*.+",
+        r"^[•●○]\s*.+",
+        r"^[-–—]\s*.+",
+    ]
 
-                result += (
-                    f" ({used_by})"
-                )
+    return any(
+        re.match(pattern, line, re.IGNORECASE)
+        for pattern in patterns
+    )
 
-            result += "\n"
 
-        else:
+def remove_choice_options(question: str) -> str:
+    lines = question.splitlines()
 
-            result += (
+    result = []
 
-                f"🟢 {index}. "
+    for line in lines:
+        if is_probable_option_line(line):
+            continue
 
-                f"<code>{password}</code>"
+        result.append(line)
 
-                " — свободен\n"
+    return "\n".join(result).strip()
 
-            )
+
+def parse_single_message(text: str) -> list[dict]:
+    text = clean_input_text(text)
+
+    if not text:
+        return []
+
+    pattern = re.compile(
+        r"(?:Вопрос|Question)\s*"
+        r"(\d+)"
+        r"\s*[:.)-]?\s*"
+        r"(.*?)"
+        r"(?:Ответ|Answer)\s*[:.)-]?\s*"
+        r"(.*?)(?="
+        r"(?:Вопрос|Question)\s*\d+\s*[:.)-]?"
+        r"|$)",
+        re.IGNORECASE | re.DOTALL
+    )
+
+    matches = pattern.findall(text)
+
+    questions = []
+
+    for number, question, answer in matches:
+        question = clean_question(question)
+        answer = clean_answer(answer)
+
+        question = remove_choice_options(question)
+
+        if not question and not answer:
+            continue
+
+        questions.append({
+            "number": number.strip(),
+            "question": question.strip(),
+            "answer": answer.strip(),
+        })
+
+    return questions
+
+
+def parse_questions(messages: list[str]) -> list[dict]:
+    all_questions = []
+
+    for message in messages:
+        parsed = parse_single_message(message)
+        all_questions.extend(parsed)
+
+    return normalize_questions(all_questions)
+
+
+def normalize_questions(questions: list[dict]) -> list[dict]:
+    result = []
+
+    seen = set()
+
+    for item in questions:
+        number = str(
+            item.get("number", "")
+        ).strip()
+
+        question = clean_question(
+            item.get("question", "")
+        )
+
+        answer = clean_answer(
+            item.get("answer", "")
+        )
+
+        key = (
+            number,
+            question,
+            answer
+        )
+
+        if key in seen:
+            continue
+
+        seen.add(key)
+
+        result.append({
+            "number": number,
+            "question": question,
+            "answer": answer,
+        })
 
     return result
 
 
-def is_owner(telegram_id):
-
-    if not OWNER_ID:
-        return False
-
-    return (
-        str(telegram_id)
-        == str(OWNER_ID)
-    )
-
-
-# =========================================================
-# КНОПКА ЗАВЕРШЕНИЯ
-# =========================================================
-
-def get_finish_keyboard():
-
-    return InlineKeyboardMarkup([
-
-        [
-
-            InlineKeyboardButton(
-
-                "⏹ Завершить ввод",
-
-                callback_data="finish_input"
-
-            )
-
-        ]
-
-    ])
-
-
-# =========================================================
-# КНОПКИ РЕЗУЛЬТАТА
-# =========================================================
-
-def get_result_keyboard():
-
-    return InlineKeyboardMarkup([
-
-        [
-
-            InlineKeyboardButton(
-
-                "📱 Удобно",
-
-                callback_data="mobile"
-
-            ),
-
-            InlineKeyboardButton(
-
-                "📝 Список",
-
-                callback_data="list"
-
-            ),
-
-        ],
-
-        [
-
-            InlineKeyboardButton(
-
-                "⚡ Только ответы",
-
-                callback_data="compact"
-
-            ),
-
-            InlineKeyboardButton(
-
-                "🔄 Заново",
-
-                callback_data="repeat"
-
-            ),
-
-        ],
-
-    ])
-
-
-# =========================================================
-# SKYSMART
-# ИЗВЛЕЧЕНИЕ НАЗВАНИЯ КОМНАТЫ
-# =========================================================
-
-def extract_skysmart_room(text):
-
-    if not text:
-        return None
-
-    match = re.search(
-
-        r"https?://edu\.skysmart\.ru/student/"
-        r"([^/?#\s]+)",
-
-        text,
-
-        flags=re.IGNORECASE
-
-    )
-
-    if not match:
-        return None
-
-    room_name = match.group(1).strip()
-
-    if not room_name:
-        return None
-
-    return room_name
-
-
-# =========================================================
-# SKYSMART
-# ПОЛУЧЕНИЕ ОТВЕТОВ
-# =========================================================
-
-def get_skysmart_answers(room_name):
-
-    response = requests.post(
-
-        SKYSMART_API_URL,
-
-        json={
-
-            "roomName": room_name
-
-        },
-
-        timeout=30
-
-    )
-
-    response.raise_for_status()
-
-    return response.json()
-
-
-# =========================================================
-# МАТЕМАТИКА
-# ПРЕОБРАЗОВАНИЕ LATEX В ЧИТАЕМЫЙ ТЕКСТ
-# =========================================================
+# ============================================================
+# LATEX -> READABLE
+# ============================================================
 
 SUPERSCRIPT_MAP = {
-
     "0": "⁰",
     "1": "¹",
     "2": "²",
@@ -630,13 +523,13 @@ SUPERSCRIPT_MAP = {
     "7": "⁷",
     "8": "⁸",
     "9": "⁹",
-
     "+": "⁺",
     "-": "⁻",
     "=": "⁼",
     "(": "⁽",
     ")": "⁾",
-
+    "n": "ⁿ",
+    "i": "ⁱ",
     "a": "ᵃ",
     "b": "ᵇ",
     "c": "ᶜ",
@@ -645,12 +538,10 @@ SUPERSCRIPT_MAP = {
     "f": "ᶠ",
     "g": "ᵍ",
     "h": "ʰ",
-    "i": "ⁱ",
     "j": "ʲ",
     "k": "ᵏ",
     "l": "ˡ",
     "m": "ᵐ",
-    "n": "ⁿ",
     "o": "ᵒ",
     "p": "ᵖ",
     "r": "ʳ",
@@ -662,278 +553,307 @@ SUPERSCRIPT_MAP = {
     "x": "ˣ",
     "y": "ʸ",
     "z": "ᶻ",
-
 }
 
 
-def convert_superscript(text):
+def convert_superscript(text: str) -> str:
 
-    def replace_power(match):
-
-        value = match.group(1)
-
-        if value is None:
-            return "^"
+    def braced(match):
+        content = match.group(1)
 
         result = ""
 
-        for char in value:
-
-            if char in SUPERSCRIPT_MAP:
-
-                result += SUPERSCRIPT_MAP[char]
-
-            else:
-
-                return f"^({value})"
+        for char in content:
+            result += SUPERSCRIPT_MAP.get(
+                char,
+                char
+            )
 
         return result
 
-    # x^{...}
     text = re.sub(
-
         r"\^\{([^{}]*)\}",
-
-        replace_power,
-
+        braced,
         text
-
     )
 
-    # x^2 / x^x
+    def simple(match):
+        char = match.group(1)
+
+        return SUPERSCRIPT_MAP.get(
+            char,
+            "^" + char
+        )
+
     text = re.sub(
-
-        r"\^([0-9A-Za-z+\-=()])",
-
-        lambda match: (
-            SUPERSCRIPT_MAP.get(
-                match.group(1),
-                "^" + match.group(1)
-            )
-        ),
-
+        r"\^([A-Za-z0-9+\-=()])",
+        simple,
         text
-
     )
 
     return text
 
 
-def extract_braced_content(text, start):
-
-    if start >= len(text):
-        return None, start
-
-    if text[start] != "{":
+def extract_braced_content(
+    text: str,
+    start: int
+):
+    if start >= len(text) or text[start] != "{":
         return None, start
 
     depth = 0
 
-    for index in range(
-        start,
-        len(text)
-    ):
-
-        char = text[index]
+    for i in range(start, len(text)):
+        char = text[i]
 
         if char == "{":
-
             depth += 1
 
         elif char == "}":
-
             depth -= 1
 
             if depth == 0:
-
                 return (
-                    text[
-                        start + 1:index
-                    ],
-                    index + 1
+                    text[start + 1:i],
+                    i + 1
                 )
 
     return None, start
 
 
-def replace_latex_fractions(text):
+def replace_latex_fractions(text: str) -> str:
 
-    patterns = [
-        r"\\dfrac",
-        r"\\tfrac",
-        r"\\frac",
+    commands = [
+        r"\dfrac",
+        r"\tfrac",
+        r"\frac",
     ]
 
     changed = True
 
     while changed:
-
         changed = False
 
-        for pattern in patterns:
+        for command in commands:
+            pos = text.find(command)
 
-            match = re.search(
-                pattern,
-                text
-            )
+            while pos != -1:
 
-            if not match:
-                continue
+                start = pos + len(command)
 
-            function_start = match.start()
+                while (
+                    start < len(text)
+                    and text[start].isspace()
+                ):
+                    start += 1
 
-            pos = match.end()
+                if (
+                    start >= len(text)
+                    or text[start] != "{"
+                ):
+                    pos = text.find(
+                        command,
+                        pos + len(command)
+                    )
+                    continue
 
-            while (
-                pos < len(text)
-                and text[pos].isspace()
-            ):
-
-                pos += 1
-
-            numerator, next_pos = (
-                extract_braced_content(
+                numerator, next_pos = extract_braced_content(
                     text,
-                    pos
+                    start
                 )
-            )
 
-            if numerator is None:
-                continue
+                if numerator is None:
+                    pos = text.find(
+                        command,
+                        pos + len(command)
+                    )
+                    continue
 
-            pos = next_pos
+                start2 = next_pos
 
-            while (
-                pos < len(text)
-                and text[pos].isspace()
-            ):
+                while (
+                    start2 < len(text)
+                    and text[start2].isspace()
+                ):
+                    start2 += 1
 
-                pos += 1
+                if (
+                    start2 >= len(text)
+                    or text[start2] != "{"
+                ):
+                    pos = text.find(
+                        command,
+                        pos + len(command)
+                    )
+                    continue
 
-            denominator, next_pos = (
-                extract_braced_content(
+                denominator, end_pos = extract_braced_content(
                     text,
-                    pos
+                    start2
                 )
-            )
 
-            if denominator is None:
-                continue
+                if denominator is None:
+                    pos = text.find(
+                        command,
+                        pos + len(command)
+                    )
+                    continue
 
-            numerator = latex_to_readable(
-                numerator
-            )
+                numerator = latex_to_readable(
+                    numerator
+                )
 
-            denominator = latex_to_readable(
-                denominator
-            )
+                denominator = latex_to_readable(
+                    denominator
+                )
 
-            replacement = (
-                f"({numerator}/{denominator})"
-            )
+                replacement = (
+                    f"({numerator}/{denominator})"
+                )
 
-            text = (
+                text = (
+                    text[:pos]
+                    + replacement
+                    + text[end_pos:]
+                )
 
-                text[:function_start]
+                changed = True
 
-                + replacement
-
-                + text[next_pos:]
-
-            )
-
-            changed = True
-
-            break
+                pos = text.find(
+                    command,
+                    pos + len(replacement)
+                )
 
     return text
 
 
-def replace_latex_sqrt(text):
+def replace_latex_sqrt(text: str) -> str:
 
-    changed = True
+    command = r"\sqrt"
 
-    while changed:
+    pos = text.find(command)
 
-        changed = False
+    while pos != -1:
 
-        match = re.search(
-            r"\\sqrt\s*\{",
-            text
-        )
+        start = pos + len(command)
 
-        if not match:
-            break
+        while (
+            start < len(text)
+            and text[start].isspace()
+        ):
+            start += 1
 
-        content, next_pos = (
-            extract_braced_content(
-                text,
-                match.end() - 1
+        if (
+            start >= len(text)
+            or text[start] != "{"
+        ):
+            pos = text.find(
+                command,
+                pos + len(command)
             )
+            continue
+
+        content, end_pos = extract_braced_content(
+            text,
+            start
         )
 
         if content is None:
             break
 
-        content = latex_to_readable(
-            content
-        )
+        content = latex_to_readable(content)
 
         replacement = f"√({content})"
 
         text = (
-
-            text[:match.start()]
-
+            text[:pos]
             + replacement
-
-            + text[next_pos:]
-
+            + text[end_pos:]
         )
 
-        changed = True
+        pos = text.find(
+            command,
+            pos + len(replacement)
+        )
 
     return text
 
 
-def latex_to_readable(text):
+def latex_to_readable(text: str) -> str:
 
     if text is None:
         return ""
 
     text = str(text)
 
-    # -----------------------------------------------------
-    # Переносы
-    # -----------------------------------------------------
+    # --------------------------------------------------------
+    # IMPORTANT:
+    # Skysmart sometimes sends comparison signs as words.
+    # gt -> >
+    # lt -> <
+    # ge -> >=
+    # le -> <=
+    # neq -> !=
+    # --------------------------------------------------------
 
-    text = text.replace(
-        "\r\n",
-        "\n"
+    text = re.sub(
+        r"\bgt\b",
+        ">",
+        text,
+        flags=re.IGNORECASE
     )
 
-    text = text.replace(
-        "\r",
-        "\n"
+    text = re.sub(
+        r"\blt\b",
+        "<",
+        text,
+        flags=re.IGNORECASE
     )
 
-    # -----------------------------------------------------
-    # Часто встречающиеся LaTeX-команды
-    # -----------------------------------------------------
+    text = re.sub(
+        r"\bge\b",
+        "≥",
+        text,
+        flags=re.IGNORECASE
+    )
+
+    text = re.sub(
+        r"\ble\b",
+        "≤",
+        text,
+        flags=re.IGNORECASE
+    )
+
+    text = re.sub(
+        r"\bneq\b",
+        "≠",
+        text,
+        flags=re.IGNORECASE
+    )
+
+    # HTML entities
+    text = (
+        text
+        .replace("&gt;", ">")
+        .replace("&lt;", "<")
+        .replace("&ge;", "≥")
+        .replace("&le;", "≤")
+        .replace("&amp;", "&")
+    )
 
     replacements = {
 
-        # Бесконечность
+        # Infinity / number sets
         r"\infty": "∞",
 
-        # Числовые множества
         r"\mathbb{R}": "ℝ",
-        r"\mathbb R": "ℝ",
         r"\mathbb{N}": "ℕ",
-        r"\mathbb N": "ℕ",
         r"\mathbb{Z}": "ℤ",
-        r"\mathbb Z": "ℤ",
         r"\mathbb{Q}": "ℚ",
+
+        r"\mathbb R": "ℝ",
+        r"\mathbb N": "ℕ",
+        r"\mathbb Z": "ℤ",
         r"\mathbb Q": "ℚ",
 
         r"\R": "ℝ",
@@ -941,106 +861,123 @@ def latex_to_readable(text):
         r"\Z": "ℤ",
         r"\Q": "ℚ",
 
-        # Неравенства
+        # Comparison
         r"\leq": "≤",
         r"\le": "≤",
+
         r"\geq": "≥",
         r"\ge": "≥",
+
         r"\neq": "≠",
         r"\ne": "≠",
 
-        # Математические символы
+        # Math symbols
         r"\pm": "±",
         r"\mp": "∓",
         r"\times": "×",
         r"\cdot": "·",
         r"\div": "÷",
 
+        # Sets
         r"\in": "∈",
         r"\notin": "∉",
-
         r"\subset": "⊂",
         r"\subseteq": "⊆",
-
         r"\cup": "∪",
         r"\cap": "∩",
 
+        # Logic
         r"\forall": "∀",
         r"\exists": "∃",
 
+        # Arrows
         r"\rightarrow": "→",
         r"\to": "→",
-        r"\Rightarrow": "⇒",
-        r"\Leftarrow": "⇐",
+        r"\leftarrow": "←",
         r"\leftrightarrow": "↔",
 
-        # Углы
+        # Geometry
         r"\angle": "∠",
-
-        # Градусы
         r"\degree": "°",
 
-        # Прочее
+        # Other
         r"\emptyset": "∅",
-
     }
 
-    for old, new in replacements.items():
+    # Replace longest commands first
+    for old, new in sorted(
+        replacements.items(),
+        key=lambda x: len(x[0]),
+        reverse=True
+    ):
+        text = text.replace(old, new)
 
-        text = text.replace(
-            old,
-            new
-        )
+    # --------------------------------------------------------
+    # Sizing commands
+    # --------------------------------------------------------
 
-    # -----------------------------------------------------
-    # Удаляем визуальные команды размеров
-    # -----------------------------------------------------
+    for command in [
+        r"\Bigg",
+        r"\bigg",
+        r"\Big",
+        r"\big",
+        r"\left",
+        r"\right",
+        r"\middle",
+    ]:
+        text = text.replace(command, "")
 
-    text = re.sub(
-        r"\\(?:Bigg|bigg|Big|big|left|right|middle)\b",
-        "",
-        text
-    )
+    # --------------------------------------------------------
+    # LaTeX spacing
+    # --------------------------------------------------------
 
-    # -----------------------------------------------------
-    # Удаляем LaTeX-пробелы
-    # -----------------------------------------------------
-
-    text = re.sub(
-        r"\\[,;:!]\s*",
-        " ",
-        text
-    )
-
-    text = text.replace(
+    for spacing in [
+        r"\,",
+        r"\;",
+        r"\:",
+        r"\!",
         r"\ ",
-        " "
-    )
-
-    text = text.replace(
         "~",
-        " "
-    )
+    ]:
+        text = text.replace(spacing, "")
 
-    # -----------------------------------------------------
-    # Дроби
-    # -----------------------------------------------------
+    # --------------------------------------------------------
+    # Fractions
+    # --------------------------------------------------------
 
-    text = replace_latex_fractions(
+    text = replace_latex_fractions(text)
+
+    # --------------------------------------------------------
+    # Square roots
+    # --------------------------------------------------------
+
+    text = replace_latex_sqrt(text)
+
+    # --------------------------------------------------------
+    # Text commands
+    # --------------------------------------------------------
+
+    text = re.sub(
+        r"\\text\s*\{([^{}]*)\}",
+        r"\1",
         text
     )
 
-    # -----------------------------------------------------
-    # Корни
-    # -----------------------------------------------------
-
-    text = replace_latex_sqrt(
+    text = re.sub(
+        r"\\mathrm\s*\{([^{}]*)\}",
+        r"\1",
         text
     )
 
-    # -----------------------------------------------------
-    # Скобки вида \{ и \}
-    # -----------------------------------------------------
+    text = re.sub(
+        r"\\operatorname\s*\{([^{}]*)\}",
+        r"\1",
+        text
+    )
+
+    # --------------------------------------------------------
+    # Escaped braces
+    # --------------------------------------------------------
 
     text = text.replace(
         r"\{",
@@ -1052,56 +989,24 @@ def latex_to_readable(text):
         "}"
     )
 
-    # -----------------------------------------------------
-    # Убираем оставшиеся фигурные скобки
-    # -----------------------------------------------------
-
+    # Remaining braces usually represent grouping.
     text = text.replace(
         "{",
         "("
-    )
-
-    text = text.replace(
+    ).replace(
         "}",
         ")"
     )
 
-    # -----------------------------------------------------
-    # Степени
-    # -----------------------------------------------------
+    # --------------------------------------------------------
+    # Powers
+    # --------------------------------------------------------
 
-    text = convert_superscript(
-        text
-    )
+    text = convert_superscript(text)
 
-    # -----------------------------------------------------
-    # Текстовые команды
-    # -----------------------------------------------------
-
-    text = re.sub(
-        r"\\text\s*\((.*?)\)",
-        r"\1",
-        text,
-        flags=re.DOTALL
-    )
-
-    text = re.sub(
-        r"\\mathrm\s*\((.*?)\)",
-        r"\1",
-        text,
-        flags=re.DOTALL
-    )
-
-    text = re.sub(
-        r"\\operatorname\s*\((.*?)\)",
-        r"\1",
-        text,
-        flags=re.DOTALL
-    )
-
-    # -----------------------------------------------------
-    # Обычные оставшиеся backslash-команды
-    # -----------------------------------------------------
+    # --------------------------------------------------------
+    # Remaining LaTeX commands
+    # --------------------------------------------------------
 
     text = re.sub(
         r"\\([A-Za-z]+)",
@@ -1109,43 +1014,22 @@ def latex_to_readable(text):
         text
     )
 
-    # -----------------------------------------------------
-    # Умножение и знаки
-    # -----------------------------------------------------
-
-    text = text.replace(
-        "−",
-        "-"
-    )
-
+    # Multiplication
     text = text.replace(
         "*",
         "×"
     )
 
-    # -----------------------------------------------------
-    # Приводим пробелы
-    # -----------------------------------------------------
-
-    text = re.sub(
-        r"[ \t]+",
-        " ",
-        text
+    # Normalize minus
+    text = text.replace(
+        "−",
+        "-"
     )
 
-    text = re.sub(
-        r"\s*,\s*",
-        ", ",
-        text
-    )
+    # --------------------------------------------------------
+    # Spaces around operators
+    # --------------------------------------------------------
 
-    text = re.sub(
-        r"\s*;\s*",
-        "; ",
-        text
-    )
-
-    # Пробелы вокруг основных операторов
     text = re.sub(
         r"\s*([=<>])\s*",
         r" \1 ",
@@ -1158,21 +1042,26 @@ def latex_to_readable(text):
         text
     )
 
-    # Минус — не трогаем отрицательные числа
+    # Don't destroy negative numbers
     text = re.sub(
-        r"(?<=[A-Za-z0-9)\]])\s*-\s*(?=[A-Za-z0-9(])",
-        " - ",
-        text
-    )
-
-    # Не допускаем двойные пробелы
-    text = re.sub(
-        r" {2,}",
+        r"[ \t]+",
         " ",
         text
     )
 
-    # Чистим пробелы около скобок
+    text = re.sub(
+        r"\n[ \t]+",
+        "\n",
+        text
+    )
+
+    text = re.sub(
+        r"[ \t]+\n",
+        "\n",
+        text
+    )
+
+    # Fix spaces after opening brackets
     text = re.sub(
         r"\(\s+",
         "(",
@@ -1188,21 +1077,17 @@ def latex_to_readable(text):
     return text.strip()
 
 
-# =========================================================
-# SKYSMART
-# ОЧИСТКА ТЕКСТА
-# =========================================================
-
-def clean_skysmart_text(text):
+def clean_skysmart_text(text) -> str:
 
     if text is None:
         return ""
 
     text = str(text)
 
-    text = latex_to_readable(
-        text
-    )
+    # Decode HTML entities first
+    text = html.unescape(text)
+
+    text = latex_to_readable(text)
 
     text = text.replace(
         "\r\n",
@@ -1214,26 +1099,58 @@ def clean_skysmart_text(text):
         "\n"
     )
 
-    lines = []
-
-    for line in text.split("\n"):
-
-        lines.append(
-            line.rstrip()
-        )
-
-    text = "\n".join(lines)
+    text = re.sub(
+        r"\n{3,}",
+        "\n\n",
+        text
+    )
 
     return text.strip()
 
 
-# =========================================================
+# ============================================================
 # SKYSMART
-# ПОЛУЧЕНИЕ СПИСКА ЗАДАНИЙ
-# =========================================================
+# ============================================================
+
+SKYSMART_URL_RE = re.compile(
+    r"https?://edu\.skysmart\.ru/student/([A-Za-z0-9_-]+)",
+    re.IGNORECASE
+)
+
+
+def extract_skysmart_room(text: str):
+    match = SKYSMART_URL_RE.search(text)
+
+    if not match:
+        return None
+
+    return match.group(1)
+
+
+def get_skysmart_data(room_name: str):
+    try:
+        response = requests.post(
+            SKYSMART_API_URL,
+            json={
+                "roomName": room_name
+            },
+            timeout=30
+        )
+
+        response.raise_for_status()
+
+        return response.json()
+
+    except Exception as e:
+        print(
+            "Skysmart API error:",
+            repr(e)
+        )
+
+        return None
+
 
 def get_skysmart_tasks(data):
-
     if not isinstance(data, list):
         return []
 
@@ -1248,13 +1165,7 @@ def get_skysmart_tasks(data):
     return tasks
 
 
-# =========================================================
-# SKYSMART
-# ПОЛУЧЕНИЕ ИНФОРМАЦИИ
-# =========================================================
-
 def get_skysmart_info(data):
-
     if not isinstance(data, list):
         return {}
 
@@ -1269,1382 +1180,399 @@ def get_skysmart_info(data):
     return info
 
 
-# =========================================================
-# SKYSMART
-# ЗАГОЛОВОК
-# =========================================================
+def get_task_question(task: dict) -> str:
 
-def make_skysmart_header(data):
+    for key in [
+        "question",
+        "text",
+        "title",
+        "task",
+        "condition",
+        "content",
+    ]:
+        value = task.get(key)
 
-    info = get_skysmart_info(data)
+        if value:
+            return clean_skysmart_text(value)
 
-    result = []
+    return ""
+
+
+def get_task_answer(task: dict) -> str:
+
+    for key in [
+        "answer",
+        "answers",
+        "correctAnswer",
+        "correct_answer",
+        "solution",
+        "result",
+    ]:
+        value = task.get(key)
+
+        if value is not None:
+            if isinstance(value, list):
+                return ", ".join(
+                    clean_skysmart_text(x)
+                    for x in value
+                )
+
+            if isinstance(value, dict):
+                return clean_skysmart_text(
+                    str(value)
+                )
+
+            return clean_skysmart_text(value)
+
+    return ""
+
+
+def get_task_number(
+    task: dict,
+    index: int
+) -> str:
+
+    for key in [
+        "number",
+        "taskNumber",
+        "task_number",
+        "index",
+        "id",
+    ]:
+        value = task.get(key)
+
+        if value is not None:
+            return str(value)
+
+    return str(index + 1)
+
+
+def get_skysmart_header(info: dict) -> str:
 
     title = clean_skysmart_text(
-        info.get(
-            "title",
-            "Задание"
-        )
+        info.get("title", "")
     )
 
-    result.append(
-        f"🎓 <b>{html.escape(title)}</b>"
+    module = clean_skysmart_text(
+        info.get("module", "")
+        or info.get("lesson", "")
     )
 
-    meta = info.get(
-        "meta",
-        {}
+    subject = clean_skysmart_text(
+        info.get("subject", "")
     )
 
-    if not isinstance(meta, dict):
-
-        return "\n".join(result)
-
-    # -----------------------------------------------------
-    # МОДУЛЬ
-    # -----------------------------------------------------
-
-    path = meta.get(
-        "path",
-        {}
+    teacher = clean_skysmart_text(
+        info.get("teacher", "")
     )
-
-    if isinstance(path, dict):
-
-        module = path.get(
-            "module",
-            {}
-        )
-
-        if isinstance(module, dict):
-
-            module_title = (
-                clean_skysmart_text(
-                    module.get("title")
-                )
-            )
-
-            if module_title:
-
-                result.append(
-
-                    "📖 <b>Модуль:</b> "
-
-                    f"{html.escape(module_title)}"
-
-                )
-
-            # -------------------------------------------------
-            # УРОК
-            # -------------------------------------------------
-
-            lesson = module.get(
-                "lesson",
-                {}
-            )
-
-            if isinstance(lesson, dict):
-
-                lesson_title = (
-                    clean_skysmart_text(
-                        lesson.get("title")
-                    )
-                )
-
-                if lesson_title:
-
-                    result.append(
-
-                        "📘 <b>Урок:</b> "
-
-                        f"{html.escape(lesson_title)}"
-
-                    )
-
-    # -----------------------------------------------------
-    # ПРЕДМЕТ
-    # -----------------------------------------------------
-
-    subject = meta.get(
-        "subject",
-        {}
-    )
-
-    if isinstance(subject, dict):
-
-        subject_title = (
-            clean_skysmart_text(
-                subject.get("title")
-            )
-        )
-
-        if subject_title:
-
-            result.append(
-
-                "📐 <b>Предмет:</b> "
-
-                f"{html.escape(subject_title)}"
-
-            )
-
-    # -----------------------------------------------------
-    # ПРЕПОДАВАТЕЛЬ
-    # -----------------------------------------------------
-
-    teacher = meta.get(
-        "teacher",
-        {}
-    )
-
-    if isinstance(teacher, dict):
-
-        teacher_name = (
-            clean_skysmart_text(
-                teacher.get("name")
-            )
-        )
-
-        teacher_surname = (
-            clean_skysmart_text(
-                teacher.get("surname")
-            )
-        )
-
-        teacher_full_name = " ".join(
-
-            part
-
-            for part in [
-
-                teacher_name,
-
-                teacher_surname
-
-            ]
-
-            if part
-
-        )
-
-        if teacher_full_name:
-
-            result.append(
-
-                "👨‍🏫 <b>Преподаватель:</b> "
-
-                f"{html.escape(teacher_full_name)}"
-
-            )
-
-    return "\n".join(result)
-
-
-# =========================================================
-# SKYSMART
-# МОБИЛЬНЫЙ ФОРМАТ
-# =========================================================
-
-def make_skysmart_mobile(data):
-
-    tasks = get_skysmart_tasks(data)
-
-    if not tasks:
-
-        return (
-            "❌ Не удалось найти "
-            "задания и ответы."
-        )
-
-    parts = [
-
-        make_skysmart_header(data)
-
-    ]
-
-    for task in tasks:
-
-        if not isinstance(task, dict):
-            continue
-
-        task_number = task.get(
-            "task_number",
-            ""
-        )
-
-        question_title = (
-            clean_skysmart_text(
-                task.get("question")
-            )
-        )
-
-        full_question = (
-            clean_skysmart_text(
-                task.get("full_question")
-            )
-        )
-
-        answers = task.get(
-            "answers",
-            []
-        )
-
-        clean_answers = []
-
-        if isinstance(answers, list):
-
-            for answer in answers:
-
-                answer_text = (
-                    clean_skysmart_text(
-                        answer
-                    )
-                )
-
-                if answer_text:
-
-                    clean_answers.append(
-                        answer_text
-                    )
-
-        answer_text = ", ".join(
-            clean_answers
-        )
-
-        block = (
-
-            f"🧩 <b>ЗАДАНИЕ "
-            f"{html.escape(str(task_number))}</b>"
-
-        )
-
-        if question_title:
-
-            block += (
-
-                "\n\n"
-
-                f"📝 <b>{html.escape(question_title)}</b>"
-
-            )
-
-        if full_question:
-
-            block += (
-
-                "\n\n"
-
-                f"{html.escape(full_question)}"
-
-            )
-
-        block += (
-
-            "\n\n"
-
-            "💬 <b>ОТВЕТ</b>\n"
-
-        )
-
-        if answer_text:
-
-            block += (
-                html.escape(answer_text)
-            )
-
-        else:
-
-            block += "Ответ не найден"
-
-        parts.append(block)
-
-    return (
-        "\n\n━━━━━━━━━━━━━━━━\n\n"
-        .join(parts)
-    )
-
-
-# =========================================================
-# SKYSMART
-# СПИСОК
-# =========================================================
-
-def make_skysmart_list(data):
-
-    tasks = get_skysmart_tasks(data)
-
-    if not tasks:
-
-        return (
-            "❌ Не удалось найти "
-            "задания и ответы."
-        )
-
-    parts = [
-
-        make_skysmart_header(data)
-
-    ]
-
-    for task in tasks:
-
-        if not isinstance(task, dict):
-            continue
-
-        task_number = task.get(
-            "task_number",
-            ""
-        )
-
-        question_title = (
-            clean_skysmart_text(
-                task.get("question")
-            )
-        )
-
-        full_question = (
-            clean_skysmart_text(
-                task.get("full_question")
-            )
-        )
-
-        answers = task.get(
-            "answers",
-            []
-        )
-
-        clean_answers = []
-
-        if isinstance(answers, list):
-
-            for answer in answers:
-
-                answer_text = (
-                    clean_skysmart_text(
-                        answer
-                    )
-                )
-
-                if answer_text:
-
-                    clean_answers.append(
-                        answer_text
-                    )
-
-        answer_text = ", ".join(
-            clean_answers
-        )
-
-        question_text = (
-            full_question
-            if full_question
-            else question_title
-        )
-
-        question_text = re.sub(
-
-            r"\s+",
-
-            " ",
-
-            question_text
-
-        ).strip()
-
-        parts.append(
-
-            f"🧩 <b>{html.escape(str(task_number))}.</b> "
-
-            f"{html.escape(question_text)}\n\n"
-
-            f"💬 {html.escape(answer_text)}"
-
-        )
-
-    return "\n\n".join(parts)
-
-
-# =========================================================
-# SKYSMART
-# ТОЛЬКО ОТВЕТЫ
-# =========================================================
-
-def make_skysmart_compact(data):
-
-    tasks = get_skysmart_tasks(data)
-
-    if not tasks:
-
-        return (
-            "❌ Не удалось найти "
-            "ответы."
-        )
 
     parts = []
 
-    for task in tasks:
+    if title:
+        parts.append(
+            f"📚 {title}"
+        )
+
+    if module:
+        parts.append(
+            f"📖 {module}"
+        )
+
+    if subject:
+        parts.append(
+            f"📌 {subject}"
+        )
+
+    if teacher:
+        parts.append(
+            f"👨‍🏫 {teacher}"
+        )
+
+    return "\n".join(parts)
+
+
+def prepare_skysmart_tasks(data) -> list[dict]:
+
+    tasks = get_skysmart_tasks(data)
+
+    result = []
+
+    for index, task in enumerate(tasks):
 
         if not isinstance(task, dict):
             continue
 
-        task_number = task.get(
-            "task_number",
-            ""
+        number = get_task_number(
+            task,
+            index
         )
 
-        answers = task.get(
-            "answers",
-            []
+        question = get_task_question(
+            task
         )
 
-        clean_answers = []
-
-        if isinstance(answers, list):
-
-            for answer in answers:
-
-                answer_text = (
-                    clean_skysmart_text(
-                        answer
-                    )
-                )
-
-                if answer_text:
-
-                    clean_answers.append(
-                        answer_text
-                    )
-
-        answer_text = ", ".join(
-            clean_answers
+        answer = get_task_answer(
+            task
         )
 
-        parts.append(
-
-            f"🧩 <b>{html.escape(str(task_number))}.</b>\n"
-
-            f"{html.escape(answer_text)}"
-
-        )
-
-    return "\n\n".join(parts)
-
-
-# =========================================================
-# ОЧИСТКА ССЫЛОК
-# =========================================================
-
-def remove_links(text):
-
-    if not text:
-        return ""
-
-    text = re.sub(
-        r"\[([^\]]+)\]\([^)]+\)",
-        r"\1",
-        text
-    )
-
-    text = re.sub(
-        r"https?://\S+",
-        "",
-        text
-    )
-
-    return text
-
-
-# =========================================================
-# ОЧИСТКА ТЕКСТА
-# =========================================================
-
-def clean_input_text(text):
-
-    if not text:
-        return ""
-
-    text = text.replace(
-        "\r\n",
-        "\n"
-    )
-
-    text = text.replace(
-        "\r",
-        "\n"
-    )
-
-    text = re.sub(
-
-        r"Получил\s+сообщение\s*:?",
-
-        "",
-
-        text,
-
-        flags=re.IGNORECASE
-
-    )
-
-    text = remove_links(text)
-
-    text = text.replace(
-        "**",
-        ""
-    )
-
-    text = text.replace(
-        "__",
-        ""
-    )
-
-    text = text.replace(
-        "`",
-        ""
-    )
-
-    text = re.sub(
-
-        r"^\s*\[\d{1,2}\.\d{1,2}\.\d{4}"
-
-        r"\s+\d{1,2}:\d{2}\]"
-
-        r"\s*[^:\n]{0,100}:\s*",
-
-        "",
-
-        text,
-
-        flags=re.MULTILINE
-
-    )
-
-    lines = []
-
-    for line in text.split("\n"):
-
-        line = line.rstrip()
-
-        lines.append(line)
-
-    text = "\n".join(lines)
-
-    text = re.sub(
-
-        r"\n{4,}",
-
-        "\n\n\n",
-
-        text
-
-    )
-
-    return text.strip()
-
-
-# =========================================================
-# ОЧИСТКА ОТВЕТА
-# =========================================================
-
-def clean_answer(answer):
-
-    if not answer:
-        return ""
-
-    answer = answer.strip()
-
-    answer = re.sub(
-
-        r"^(ОТВЕТ|Ответ)\s*:?\s*",
-
-        "",
-
-        answer,
-
-        flags=re.IGNORECASE
-
-    )
-
-    answer = remove_links(answer)
-
-    answer = answer.replace(
-        "**",
-        ""
-    )
-
-    answer = answer.replace(
-        "__",
-        ""
-    )
-
-    answer = answer.replace(
-        "`",
-        ""
-    )
-
-    lines = []
-
-    for line in answer.split("\n"):
-
-        line = line.strip()
-
-        if line:
-
-            lines.append(line)
-
-    return "\n".join(lines).strip()
-
-
-# =========================================================
-# ОЧИСТКА ВОПРОСА
-# =========================================================
-
-def clean_question(question):
-
-    if not question:
-        return ""
-
-    question = question.strip()
-
-    question = re.sub(
-
-        r"^\s*Вопрос\s+\d+\s*:?\s*",
-
-        "",
-
-        question,
-
-        flags=re.IGNORECASE
-
-    )
-
-    question = re.sub(
-
-        r"^\s*\d+\s*[\.\)]\s*",
-
-        "",
-
-        question
-
-    )
-
-    lines = []
-
-    for line in question.split("\n"):
-
-        line = line.strip()
-
-        if line:
-
-            lines.append(line)
-
-    return "\n".join(lines).strip()
-
-
-# =========================================================
-# РАЗДЕЛЕНИЕ TELEGRAM EXPORT
-# =========================================================
-
-def split_by_telegram_messages(text):
-
-    pattern = re.compile(
-
-        r"(?="
-
-        r"\[\d{1,2}\.\d{1,2}\.\d{4}"
-
-        r"\s+\d{1,2}:\d{2}\]"
-
-        r")"
-
-    )
-
-    parts = pattern.split(text)
-
-    result = []
-
-    for part in parts:
-
-        part = part.strip()
-
-        if part:
-
-            result.append(part)
+        result.append({
+            "number": number,
+            "question": question,
+            "answer": answer,
+        })
 
     return result
 
 
-# =========================================================
-# ОПРЕДЕЛЕНИЕ ВАРИАНТА ОТВЕТА
-# =========================================================
+# ============================================================
+# SKYSMART FORMATS
+# ============================================================
 
-def normalize_line(line):
+def make_skysmart_mobile(
+    data
+) -> str:
 
-    line = line.strip()
+    info = get_skysmart_info(data)
+    tasks = prepare_skysmart_tasks(data)
 
-    line = re.sub(
-        r"^\s*[A-Za-zА-Яа-яЁё]?\s*[\)\.\-:]\s*",
-        "",
-        line
-    )
+    parts = []
 
-    line = re.sub(
-        r"^\s*\d+\s*[\)\.\-:]\s*",
-        "",
-        line
-    )
+    header = get_skysmart_header(info)
 
-    return line.strip()
+    if header:
+        parts.append(header)
 
+    parts.append("")
 
-def is_probable_option_line(line):
+    for task in tasks:
 
-    if not line:
-        return False
+        number = task["number"]
+        question = task["question"]
+        answer = task["answer"]
 
-    stripped = line.strip()
-
-    if re.match(
-        r"^[A-Za-zА-Яа-яЁё]\s*[\)\.\-:]",
-        stripped
-    ):
-        return True
-
-    if re.match(
-        r"^\d+\s*[\)\.\-:]",
-        stripped
-    ):
-        return True
-
-    if re.match(
-        r"^[•●○◦▪▫]\s+",
-        stripped
-    ):
-        return True
-
-    return False
-
-
-# =========================================================
-# УДАЛЕНИЕ ВАРИАНТОВ ОТВЕТА
-# =========================================================
-
-def remove_choice_options(text, answer):
-
-    if not text or not answer:
-        return text.strip()
-
-    lines = text.splitlines()
-
-    while lines and not lines[0].strip():
-        lines.pop(0)
-
-    while lines and not lines[-1].strip():
-        lines.pop()
-
-    if not lines:
-        return ""
-
-    answer_clean = clean_answer(
-        answer
-    )
-
-    answer_normalized = re.sub(
-        r"\s+",
-        " ",
-        answer_clean
-    ).strip().lower()
-
-    answer_index = None
-
-    # -----------------------------------------------------
-    # Ищем строку, совпадающую с ответом
-    # -----------------------------------------------------
-
-    for i, line in enumerate(lines):
-
-        normalized = re.sub(
-            r"\s+",
-            " ",
-            line.strip()
-        ).strip().lower()
-
-        normalized_without_marker = (
-            re.sub(
-                r"^[A-Za-zА-Яа-яЁё0-9]\s*[\)\.\-:]\s*",
-                "",
-                normalized
-            )
+        parts.append(
+            f"❓ <b>{html.escape(number)}.</b>"
         )
 
-        if (
-            normalized == answer_normalized
-            or normalized_without_marker
-            == answer_normalized
-        ):
-
-            answer_index = i
-            break
-
-    if answer_index is None:
-
-        # Иногда ответ находится внутри строки
-        # с буквой варианта.
-
-        for i, line in enumerate(lines):
-
-            candidate = normalize_line(
-                line
+        if question:
+            parts.append(
+                html.escape(question)
             )
 
-            candidate = re.sub(
-                r"\s+",
-                " ",
-                candidate
-            ).strip().lower()
-
-            if candidate == answer_normalized:
-
-                answer_index = i
-                break
-
-    if answer_index is None:
-        return text.strip()
-
-    # -----------------------------------------------------
-    # Определяем, начинается ли блок вариантов
-    # -----------------------------------------------------
-
-    option_start = answer_index
-
-    found_options = 0
-
-    i = answer_index
-
-    while i >= 0:
-
-        current = lines[i].strip()
-
-        if not current:
-
-            i -= 1
-            continue
-
-        if is_probable_option_line(
-            current
-        ):
-
-            found_options += 1
-            option_start = i
-            i -= 1
-            continue
-
-        # Если уже нашли несколько вариантов,
-        # дошли до текста вопроса.
-        break
-
-    if found_options >= 1:
-
-        # Удаляем варианты и оставляем
-        # только сам вопрос.
-
-        cleaned = lines[
-            :option_start
-        ]
-
-        return "\n".join(
-            cleaned
-        ).strip()
-
-    # -----------------------------------------------------
-    # Варианты без буквенных обозначений
-    # -----------------------------------------------------
-
-    j = answer_index - 1
-
-    while j >= 0:
-
-        if not lines[j].strip():
-
-            candidate_count = (
-                answer_index
-                - j
-                - 1
-            )
-
-            if candidate_count >= 2:
-
-                return "\n".join(
-                    lines[:j]
-                ).strip()
-
-            break
-
-        j -= 1
-
-    return text.strip()
-
-
-# =========================================================
-# ПАРСИНГ ОДНОГО СООБЩЕНИЯ
-# =========================================================
-
-def parse_single_message(text):
-
-    text = clean_input_text(text)
-
-    if not text:
-        return []
-
-    answer_pattern = re.compile(
-
-        r"(?:^|\n)"
-
-        r"\s*(?:\[)?ОТВЕТ(?:\])?"
-
-        r"\s*:?\s*",
-
-        re.IGNORECASE
-
-    )
-
-    matches = list(
-        answer_pattern.finditer(text)
-    )
-
-    if not matches:
-        return []
-
-    answer_match = matches[-1]
-
-    question_part = text[
-        :answer_match.start()
-    ].strip()
-
-    answer_part = text[
-        answer_match.end():
-    ].strip()
-
-    answer_part = clean_answer(
-        answer_part
-    )
-
-    answer_lines = [
-
-        line.strip()
-
-        for line
-        in answer_part.split("\n")
-
-        if line.strip()
-
-    ]
-
-    if answer_lines:
-
-        answer_part = answer_lines[0]
-
-    question_part = (
-        remove_choice_options(
-
-            question_part,
-
-            answer_part
-
-        )
-    )
-
-    question_part = clean_question(
-        question_part
-    )
-
-    if (
-        not question_part
-        or not answer_part
-    ):
-
-        return []
-
-    return [
-
-        (
-
-            None,
-
-            question_part,
-
-            answer_part
-
+        parts.append("")
+
+        parts.append(
+            f"✅ <b>Ответ:</b> "
+            f"{html.escape(answer)}"
         )
 
-    ]
+        parts.append("")
+
+    return "\n".join(parts).strip()
 
 
-# =========================================================
-# ГЛАВНЫЙ ПАРСЕР
-# =========================================================
+def make_skysmart_list(
+    data
+) -> str:
 
-def parse_questions(text):
+    info = get_skysmart_info(data)
+    tasks = prepare_skysmart_tasks(data)
 
-    text = clean_input_text(text)
+    parts = []
 
-    if not text:
-        return []
+    header = get_skysmart_header(info)
 
-    telegram_parts = (
-        split_by_telegram_messages(
-            text
-        )
-    )
+    if header:
+        parts.append(header)
+        parts.append("")
 
-    all_questions = []
+    for task in tasks:
 
-    if len(telegram_parts) > 1:
-
-        for part in telegram_parts:
-
-            parsed = parse_single_message(
-                part
-            )
-
-            if parsed:
-
-                all_questions.extend(
-                    parsed
-                )
-
-        if all_questions:
-
-            return normalize_questions(
-                all_questions
-            )
-
-    parsed = parse_single_message(
-        text
-    )
-
-    if parsed:
-
-        return normalize_questions(
-            parsed
+        number = html.escape(
+            task["number"]
         )
 
-    return []
-
-
-# =========================================================
-# НОМЕРА
-# =========================================================
-
-def normalize_questions(questions):
-
-    result = []
-
-    used_numbers = set()
-
-    next_number = 1
-
-    for (
-        number,
-        question,
-        answer
-    ) in questions:
-
-        if number is None:
-
-            while (
-                next_number
-                in used_numbers
-            ):
-
-                next_number += 1
-
-            number = next_number
-
-        else:
-
-            try:
-
-                number = int(number)
-
-            except Exception:
-
-                while (
-                    next_number
-                    in used_numbers
-                ):
-
-                    next_number += 1
-
-                number = next_number
-
-        if number in used_numbers:
-
-            while (
-                next_number
-                in used_numbers
-            ):
-
-                next_number += 1
-
-            number = next_number
-
-        used_numbers.add(number)
-
-        next_number = max(
-
-            next_number,
-
-            number + 1
-
+        answer = html.escape(
+            task["answer"]
         )
 
-        result.append(
+        parts.append(
+            f"<b>{number}.</b> {answer}"
+        )
 
-            (
+    return "\n".join(parts)
 
-                number,
 
-                question,
+def make_skysmart_compact(
+    data
+) -> str:
 
+    tasks = prepare_skysmart_tasks(data)
+
+    answers = []
+
+    for task in tasks:
+
+        answer = task["answer"]
+
+        if answer:
+            answers.append(
                 answer
-
             )
 
-        )
-
-    return result
-
-
-# =========================================================
-# ЦИТАТА
-# =========================================================
-
-def make_quote(text):
-
-    lines = text.split("\n")
-
-    result = []
-
-    for line in lines:
-
-        line = line.strip()
-
-        if line:
-
-            result.append(
-
-                f"<blockquote>"
-                f"{html.escape(line)}"
-                f"</blockquote>"
-
-            )
-
-    return "\n".join(result)
-
-
-# =========================================================
-# МОБИЛЬНЫЙ ФОРМАТ
-# =========================================================
-
-def make_mobile(questions):
-
-    if not questions:
-
-        return (
-
-            "❌ Не удалось найти "
-            "вопросы и ответы."
-
-        )
-
-    parts = [
-
-        "🤖 <b>РЕЗУЛЬТАТЫ</b>"
-
-    ]
-
-    for index, (
-
-        number,
-        question,
-        answer
-
-    ) in enumerate(
-
-        questions,
-
-        start=1
-
-    ):
-
-        safe_question = html.escape(
-            question
-        )
-
-        quote = make_quote(
-            answer
-        )
-
-        block = (
-
-            f"🧩 <b>ЗАДАНИЕ {index}</b>\n\n"
-
-            f"❓ <b>ВОПРОС</b>\n"
-
-            f"{safe_question}\n\n"
-
-            f"💬 <b>ОТВЕТ</b>\n"
-
-            f"{quote}"
-
-        )
-
-        parts.append(block)
-
-    return (
-
-        "\n\n━━━━━━━━━━━━━━━━\n\n"
-        .join(parts)
-
+    return ", ".join(
+        answers
     )
 
 
-# =========================================================
-# СПИСОК
-# =========================================================
+# ============================================================
+# ORDINARY FORMATS
+# ============================================================
 
-def make_list(questions):
-
-    if not questions:
-
-        return (
-
-            "❌ Не удалось найти "
-            "вопросы и ответы."
-
-        )
+def make_mobile(
+    questions: list[dict]
+) -> str:
 
     parts = []
 
-    for index, (
+    for item in questions:
 
-        number,
-        question,
-        answer
-
-    ) in enumerate(
-
-        questions,
-
-        start=1
-
-    ):
-
-        safe_question = html.escape(
-            question
+        number = html.escape(
+            item["number"]
         )
 
-        clean_answer_text = re.sub(
+        question = html.escape(
+            item["question"]
+        )
 
-            r"\s+",
+        answer = html.escape(
+            item["answer"]
+        )
 
-            " ",
+        parts.append(
+            f"❓ <b>{number}.</b>"
+        )
 
-            answer.replace(
-                "\n",
-                " "
+        if question:
+            parts.append(
+                question
             )
 
-        ).strip()
-
-        safe_answer = html.escape(
-            clean_answer_text
-        )
+        parts.append("")
 
         parts.append(
-
-            f"🧩 <b>{index}.</b> "
-
-            f"<b>{safe_question}</b>\n"
-
-            f"💬 {safe_answer}"
-
+            f"✅ <b>Ответ:</b> {answer}"
         )
 
-    return "\n\n".join(parts)
+        parts.append("")
+
+    return "\n".join(parts).strip()
 
 
-# =========================================================
-# ТОЛЬКО ОТВЕТЫ
-# =========================================================
-
-def make_compact(questions):
-
-    if not questions:
-
-        return (
-
-            "❌ Не удалось найти "
-            "вопросы и ответы."
-
-        )
+def make_list(
+    questions: list[dict]
+) -> str:
 
     parts = []
 
-    for index, (
+    for item in questions:
 
-        number,
-        question,
-        answer
+        number = html.escape(
+            item["number"]
+        )
 
-    ) in enumerate(
-
-        questions,
-
-        start=1
-
-    ):
-
-        formatted = []
-
-        for line in answer.split("\n"):
-
-            line = line.strip()
-
-            if line:
-
-                formatted.append(
-                    html.escape(line)
-                )
-
-        answer_text = "\n".join(
-            formatted
+        answer = html.escape(
+            item["answer"]
         )
 
         parts.append(
-
-            f"🧩 <b>{index}.</b>\n"
-
-            f"{make_quote(answer_text)}"
-
+            f"<b>{number}.</b> {answer}"
         )
 
-    return "\n\n".join(parts)
+    return "\n".join(parts)
 
 
-# =========================================================
+def make_compact(
+    questions: list[dict]
+) -> str:
+
+    answers = []
+
+    for item in questions:
+
+        answer = item["answer"].strip()
+
+        if answer:
+            answers.append(
+                answer
+            )
+
+    return ", ".join(
+        answers
+    )
+
+
+# ============================================================
+# KEYBOARDS
+# ============================================================
+
+def result_keyboard() -> InlineKeyboardMarkup:
+
+    keyboard = [
+        [
+            InlineKeyboardButton(
+                "📱 Удобно",
+                callback_data="format_mobile"
+            ),
+            InlineKeyboardButton(
+                "📝 Список",
+                callback_data="format_list"
+            ),
+        ],
+        [
+            InlineKeyboardButton(
+                "⚡ Только ответы",
+                callback_data="format_compact"
+            ),
+            InlineKeyboardButton(
+                "🔄 Заново",
+                callback_data="format_repeat"
+            ),
+        ],
+    ]
+
+    return InlineKeyboardMarkup(
+        keyboard
+    )
+
+
+def finish_keyboard() -> InlineKeyboardMarkup:
+
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton(
+                "⏹ Завершить ввод",
+                callback_data="finish_input"
+            )
+        ]
+    ])
+
+
+# ============================================================
 # /START
-# =========================================================
+# ============================================================
 
-async def start(
+async def start_command(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE
 ):
 
-    if not update.effective_user:
+    user = update.effective_user
+
+    if user is None:
         return
 
-    user_id = update.effective_user.id
+    user_id = user.id
 
     create_user_if_needed(
         user_id
@@ -2653,160 +1581,179 @@ async def start(
     if is_authorized(user_id):
 
         await update.message.reply_text(
-
-            "🤖 <b>Админский бот!</b>\n\n"
-
-            "✅ <b>Доступ разрешён!</b>\n\n"
-
-            "📥 Отправляй задания или "
-            "ссылку Skysmart.\n\n"
-
-            "Для обычных сообщений после "
-            "окончания нажми:\n"
-
-            "⏹ <b>Завершить ввод</b>",
-
-            parse_mode="HTML"
-
+            "✅ Вы уже авторизованы.\n\n"
+            "Отправляйте задания сообщениями.\n"
+            "Когда закончите — нажмите "
+            "«⏹ Завершить ввод»."
         )
 
         return
 
     await update.message.reply_text(
-
-        "🤖 <b>Админский бот!</b>\n\n"
-
-        "🔐 <b>Требуется пароль</b>\n\n"
-
-        "Для использования бота введи "
-        "выданный пароль.\n\n"
-
-        "Формат:\n"
-
+        "🔐 Для использования бота нужен пароль.\n\n"
+        "Отправьте пароль в формате:\n"
         "<code>XXXX-XXXX</code>",
-
         parse_mode="HTML"
-
     )
 
 
-# =========================================================
+# ============================================================
 # /ID
-# =========================================================
+# ============================================================
 
-async def get_id(
+async def id_command(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE
 ):
 
-    user_id = update.effective_user.id
+    user = update.effective_user
+
+    if user is None:
+        return
 
     await update.message.reply_text(
-
-        "🆔 <b>Твой Telegram ID</b>\n\n"
-
-        f"<code>{user_id}</code>",
-
+        f"🆔 Ваш Telegram ID:\n"
+        f"<code>{user.id}</code>",
         parse_mode="HTML"
-
     )
 
 
-# =========================================================
+# ============================================================
 # /KEYS
-# =========================================================
+# ============================================================
 
 async def keys_command(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE
 ):
 
-    user_id = update.effective_user.id
+    user = update.effective_user
 
-    if not is_owner(user_id):
+    if user is None:
+        return
+
+    if str(user.id) != str(OWNER_ID):
 
         await update.message.reply_text(
-
-            "⛔ Эта команда доступна "
-            "только владельцу бота."
-
+            "⛔ Недостаточно прав."
         )
 
         return
 
-    result = make_password_list()
+    passwords = get_unused_passwords()
+
+    if not passwords:
+
+        await update.message.reply_text(
+            "Паролей нет."
+        )
+
+        return
+
+    text = "🔑 <b>Свободные пароли:</b>\n\n"
+
+    for password in passwords:
+        text += (
+            f"<code>{html.escape(password)}</code>\n"
+        )
 
     await update.message.reply_text(
-
-        result,
-
+        text,
         parse_mode="HTML"
-
     )
 
 
-# =========================================================
-# SKYSMART
-# ОБРАБОТКА ССЫЛКИ
-# =========================================================
+# ============================================================
+# PASSWORD / NORMAL TEXT / SKYSMART URL
+# ============================================================
 
-async def handle_skysmart_link(
+async def text_message(
     update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-    room_name: str
+    context: ContextTypes.DEFAULT_TYPE
 ):
 
-    user_id = update.effective_user.id
+    if update.message is None:
+        return
 
-    chat_id = update.effective_chat.id
+    user = update.effective_user
 
-    loading_message = await (
-        update.message.reply_text(
+    if user is None:
+        return
 
-            "🎓 <b>Skysmart</b>\n\n"
+    user_id = user.id
+    text = update.message.text or ""
 
-            "🔎 Получаю задание...\n\n"
+    text = text.strip()
 
-            f"🏷️ Комната: "
-            f"<code>{html.escape(room_name)}</code>\n\n"
+    if not text:
+        return
 
-            "⏳ Пожалуйста, подожди.",
+    # --------------------------------------------------------
+    # Authorization
+    # --------------------------------------------------------
 
-            parse_mode="HTML"
-
-        )
+    create_user_if_needed(
+        user_id
     )
 
-    try:
+    if not is_authorized(user_id):
 
-        data = await asyncio.to_thread(
+        if use_password(
+            text,
+            user_id
+        ):
 
-            get_skysmart_answers,
+            await update.message.reply_text(
+                "✅ Пароль принят!\n\n"
+                "Доступ открыт.\n"
+                "Теперь отправляйте задания."
+            )
 
-            room_name
+        else:
 
+            await update.message.reply_text(
+                "❌ Неверный или уже использованный пароль."
+            )
+
+        return
+
+    # --------------------------------------------------------
+    # Skysmart URL
+    # --------------------------------------------------------
+
+    room_name = extract_skysmart_room(
+        text
+    )
+
+    if room_name:
+
+        processing_message = (
+            await update.message.reply_text(
+                "⏳ Получаю задания из Skysmart..."
+            )
         )
 
-        tasks = get_skysmart_tasks(
+        data = await asyncio.to_thread(
+            get_skysmart_data,
+            room_name
+        )
+
+        if not data:
+
+            await processing_message.edit_text(
+                "❌ Не удалось получить данные Skysmart."
+            )
+
+            return
+
+        tasks = prepare_skysmart_tasks(
             data
         )
 
         if not tasks:
 
-            await loading_message.edit_text(
-
-                "❌ <b>Ответы не найдены.</b>\n\n"
-
-                "Возможно:\n"
-
-                "• ссылка недействительна;\n"
-
-                "• задание недоступно;\n"
-
-                "• сервер не нашёл комнату.",
-
-                parse_mode="HTML"
-
+            await processing_message.edit_text(
+                "❌ В ответе Skysmart не найдено заданий."
             )
 
             return
@@ -2815,244 +1762,33 @@ async def handle_skysmart_link(
             user_id
         ] = data
 
-        user_last_skysmart_room[
-            user_id
-        ] = room_name
-
-        result = make_skysmart_mobile(
+        output = make_skysmart_mobile(
             data
         )
 
-        messages = split_long_text(
-            result
-        )
-
-        if len(messages) == 1:
-
-            await loading_message.edit_text(
-
-                messages[0],
-
-                parse_mode="HTML",
-
-                reply_markup=get_result_keyboard()
-
-            )
-
-            return
-
-        try:
-
-            await loading_message.delete()
-
-        except Exception:
-
-            pass
-
-        await send_result(
-
-            context.bot,
-
-            chat_id,
-
-            result
-
-        )
-
-    except requests.exceptions.Timeout:
-
-        await loading_message.edit_text(
-
-            "⏳ <b>Сервер слишком долго отвечает.</b>\n\n"
-
-            "Попробуй ещё раз позже.",
-
+        await processing_message.edit_text(
+            output[:MAX_MESSAGE_LENGTH],
             parse_mode="HTML"
-
         )
-
-    except requests.exceptions.ConnectionError:
-
-        await loading_message.edit_text(
-
-            "❌ <b>Не удалось подключиться "
-            "к серверу.</b>\n\n"
-
-            "Попробуй ещё раз позже.",
-
-            parse_mode="HTML"
-
-        )
-
-    except requests.exceptions.HTTPError as error:
-
-        print(
-            "Skysmart HTTP Error:",
-            error
-        )
-
-        await loading_message.edit_text(
-
-            "❌ <b>Сервер вернул ошибку.</b>\n\n"
-
-            "Возможно, комната не найдена.",
-
-            parse_mode="HTML"
-
-        )
-
-    except ValueError:
-
-        await loading_message.edit_text(
-
-            "❌ <b>Некорректный ответ сервера.</b>",
-
-            parse_mode="HTML"
-
-        )
-
-    except Exception as error:
-
-        print(
-            "Ошибка Skysmart:",
-            error
-        )
-
-        await loading_message.edit_text(
-
-            "❌ <b>Произошла ошибка.</b>\n\n"
-
-            "Попробуй ещё раз.",
-
-            parse_mode="HTML"
-
-        )
-
-
-# =========================================================
-# ПОЛУЧЕНИЕ ТЕКСТА
-# =========================================================
-
-async def echo(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
-
-    if not update.message:
-        return
-
-    if not update.message.text:
-        return
-
-    user_id = update.effective_user.id
-
-    chat_id = update.effective_chat.id
-
-    text = update.message.text.strip()
-
-    # -----------------------------------------------------
-    # АВТОРИЗАЦИЯ
-    # -----------------------------------------------------
-
-    if not is_authorized(user_id):
-
-        create_user_if_needed(
-            user_id
-        )
-
-        success, status = use_password(
-
-            text,
-
-            user_id
-
-        )
-
-        if success:
-
-            await update.message.reply_text(
-
-                "🤖 <b>Админский бот!</b>\n\n"
-
-                "✅ <b>Пароль принят!</b>\n\n"
-
-                "Теперь можешь отправлять "
-                "задания или ссылки Skysmart.",
-
-                parse_mode="HTML"
-
-            )
-
-            return
-
-        if status == "used":
-
-            await update.message.reply_text(
-
-                "❌ Этот пароль уже использован.\n\n"
-
-                "Получи новый пароль."
-
-            )
-
-            return
-
-        if status == "error":
-
-            await update.message.reply_text(
-
-                "⚠️ Ошибка при проверке пароля.\n\n"
-
-                "Попробуй ещё раз."
-
-            )
-
-            return
 
         await update.message.reply_text(
-
-            "❌ <b>Неверный пароль.</b>\n\n"
-
-            "Введите пароль в формате:\n\n"
-
-            "<code>XXXX-XXXX</code>",
-
-            parse_mode="HTML"
-
+            "Выберите формат:",
+            reply_markup=result_keyboard()
         )
 
         return
 
-    # -----------------------------------------------------
-    # SKYSMART
-    # Проверяем ссылку ДО добавления в буфер
-    # -----------------------------------------------------
-
-    room_name = extract_skysmart_room(
-        text
-    )
-
-    if room_name:
-
-        await handle_skysmart_link(
-
-            update,
-
-            context,
-
-            room_name
-
-        )
-
-        return
-
-    # -----------------------------------------------------
-    # ОБЫЧНЫЙ БУФЕР
-    # -----------------------------------------------------
+    # --------------------------------------------------------
+    # Ordinary task input
+    # --------------------------------------------------------
 
     if user_id not in user_buffers:
-
         user_buffers[user_id] = []
+
+    current_size = sum(
+        len(x)
+        for x in user_buffers[user_id]
+    )
 
     if (
         len(user_buffers[user_id])
@@ -3060,46 +1796,16 @@ async def echo(
     ):
 
         await update.message.reply_text(
-
-            f"⚠️ Достигнут лимит: "
-
-            f"<b>{MAX_INPUT_MESSAGES}</b> "
-
-            "сообщений.\n\n"
-
-            "Нажми «⏹ Завершить ввод».",
-
-            parse_mode="HTML"
-
+            "⚠️ Слишком много сообщений.\n"
+            "Нажмите «⏹ Завершить ввод»."
         )
 
         return
 
-    current_length = sum(
-
-        len(message)
-
-        for message in user_buffers[user_id]
-
-    )
-
-    if (
-
-        current_length
-        + len(text)
-        > MAX_INPUT_LENGTH
-
-    ):
+    if current_size + len(text) > MAX_INPUT_LENGTH:
 
         await update.message.reply_text(
-
-            "⚠️ Достигнут лимит "
-            "размера текста.\n\n"
-
-            "Нажми «⏹ Завершить ввод».",
-
-            parse_mode="HTML"
-
+            "⚠️ Слишком большой объём текста."
         )
 
         return
@@ -3108,235 +1814,38 @@ async def echo(
         text
     )
 
-    # -----------------------------------------------------
-    # Удаляем старую кнопку
-    # -----------------------------------------------------
-
-    old_message_id = (
-        user_last_control_message.get(
-            user_id
-        )
+    # Delete previous control message
+    old_message_id = user_last_control_message.get(
+        user_id
     )
 
     if old_message_id:
 
         try:
-
-            await context.bot.edit_message_reply_markup(
-
-                chat_id=chat_id,
-
-                message_id=old_message_id,
-
-                reply_markup=None
-
+            await context.bot.delete_message(
+                chat_id=update.effective_chat.id,
+                message_id=old_message_id
             )
+        except Exception:
+            pass
 
-        except Exception as error:
-
-            print(
-
-                "Ошибка удаления "
-                "старой кнопки:",
-
-                error
-
-            )
-
-    # -----------------------------------------------------
-    # Новая кнопка
-    # -----------------------------------------------------
-
-    count = len(
-        user_buffers[user_id]
+    control_message = await update.message.reply_text(
+        "📥 Сообщение получено.\n"
+        f"Всего сообщений: "
+        f"{len(user_buffers[user_id])}\n\n"
+        "Когда закончите отправлять задания, "
+        "нажмите кнопку ниже.",
+        reply_markup=finish_keyboard()
     )
 
-    control_message = (
-        await context.bot.send_message(
+    user_last_control_message[
+        user_id
+    ] = control_message.message_id
 
-            chat_id=chat_id,
 
-            text=(
-
-                "📥 <b>Сообщение добавлено!</b>\n\n"
-
-                f"📦 Получено сообщений: "
-
-                f"<b>{count}</b>\n\n"
-
-                "Можешь отправить ещё сообщения "
-                "или завершить ввод."
-
-            ),
-
-            parse_mode="HTML",
-
-            reply_markup=get_finish_keyboard()
-
-        )
-    )
-
-    user_last_control_message[user_id] = (
-
-        control_message.message_id
-
-    )
-
-
-# =========================================================
-# ДЕЛЕНИЕ ДЛИННОГО РЕЗУЛЬТАТА
-# =========================================================
-
-def split_long_text(text):
-
-    if len(text) <= MAX_MESSAGE_LENGTH:
-
-        return [text]
-
-    separator = (
-
-        "\n\n━━━━━━━━━━━━━━━━\n\n"
-
-    )
-
-    blocks = text.split(
-        separator
-    )
-
-    result = []
-
-    current = ""
-
-    for block in blocks:
-
-        if len(block) > MAX_MESSAGE_LENGTH:
-
-            if current:
-
-                result.append(current)
-
-                current = ""
-
-            remaining = block
-
-            while (
-                len(remaining)
-                > MAX_MESSAGE_LENGTH
-            ):
-
-                cut = remaining.rfind(
-                    "\n",
-                    0,
-                    MAX_MESSAGE_LENGTH
-                )
-
-                if cut < 100:
-
-                    cut = MAX_MESSAGE_LENGTH
-
-                result.append(
-                    remaining[:cut]
-                )
-
-                remaining = remaining[
-                    cut:
-                ].lstrip()
-
-            if remaining:
-
-                current = remaining
-
-            continue
-
-        if not current:
-
-            current = block
-
-            continue
-
-        if (
-
-            len(current)
-
-            + len(separator)
-
-            + len(block)
-
-            <= MAX_MESSAGE_LENGTH
-
-        ):
-
-            current += (
-
-                separator
-
-                + block
-
-            )
-
-        else:
-
-            result.append(
-                current
-            )
-
-            current = block
-
-    if current:
-
-        result.append(
-            current
-        )
-
-    return result
-
-
-# =========================================================
-# ОТПРАВКА РЕЗУЛЬТАТА
-# =========================================================
-
-async def send_result(
-
-    bot,
-
-    chat_id,
-
-    result
-
-):
-
-    messages = split_long_text(
-        result
-    )
-
-    for index, message_text in enumerate(
-        messages
-    ):
-
-        keyboard = None
-
-        if index == len(messages) - 1:
-
-            keyboard = (
-                get_result_keyboard()
-            )
-
-        await bot.send_message(
-
-            chat_id=chat_id,
-
-            text=message_text,
-
-            parse_mode="HTML",
-
-            reply_markup=keyboard
-
-        )
-
-
-# =========================================================
-# ЗАВЕРШЕНИЕ ВВОДА
-# =========================================================
+# ============================================================
+# FINISH INPUT
+# ============================================================
 
 async def finish_input(
     update: Update,
@@ -3345,655 +1854,371 @@ async def finish_input(
 
     query = update.callback_query
 
-    if not query:
+    if query is None:
         return
 
-    user_id = query.from_user.id
+    await query.answer()
 
-    if not is_authorized(user_id):
+    user = query.from_user
 
-        await query.answer(
-
-            "⛔ Нет доступа.",
-
-            show_alert=True
-
-        )
-
+    if user is None:
         return
 
-    await query.answer(
-        "🔍 Обрабатываю..."
-    )
-
-    chat_id = query.message.chat_id
+    user_id = user.id
 
     messages = user_buffers.get(
-
         user_id,
-
         []
-
     )
 
     if not messages:
 
         await query.message.edit_text(
-
-            "⚠️ Нет накопленных сообщений."
-
+            "⚠️ Вы ещё ничего не отправили."
         )
 
         return
 
-    combined_text = "\n\n".join(
+    questions = parse_questions(
         messages
     )
 
-    questions = parse_questions(
-        combined_text
-    )
+    user_last_texts[
+        user_id
+    ] = questions
+
+    user_buffers[
+        user_id
+    ] = []
 
     if not questions:
 
         await query.message.edit_text(
-
-            "❌ <b>Не удалось распознать задания.</b>\n\n"
-
-            "Бот не смог найти пары:\n"
-
-            "❓ Вопрос\n"
-
-            "💬 Ответ\n\n"
-
-            "Попробуй проверить формат текста.",
-
-            parse_mode="HTML"
-
-        )
-
-        user_buffers[user_id] = []
-
-        return
-
-    # -----------------------------------------------------
-    # СОХРАНЯЕМ
-    # -----------------------------------------------------
-
-    user_last_texts[user_id] = (
-        combined_text
-    )
-
-    user_last_questions[user_id] = (
-        questions
-    )
-
-    user_buffers[user_id] = []
-
-    user_last_control_message.pop(
-
-        user_id,
-
-        None
-
-    )
-
-    result = make_mobile(
-        questions
-    )
-
-    if len(result) <= MAX_MESSAGE_LENGTH:
-
-        await query.message.edit_text(
-
-            result,
-
-            parse_mode="HTML",
-
-            reply_markup=get_result_keyboard()
-
+            "❌ Не удалось распознать задания.\n\n"
+            "Проверьте, что текст содержит пары "
+            "«Вопрос ... Ответ ...»."
         )
 
         return
 
-    try:
+    output = make_mobile(
+        questions
+    )
 
-        await query.message.delete()
+    await query.message.edit_text(
+        output[:MAX_MESSAGE_LENGTH],
+        parse_mode="HTML"
+    )
 
-    except Exception:
-
-        pass
-
-    await send_result(
-
-        context.bot,
-
-        chat_id,
-
-        result
-
+    await query.message.reply_text(
+        "Выберите формат:",
+        reply_markup=result_keyboard()
     )
 
 
-# =========================================================
-# КНОПКИ
-# =========================================================
+# ============================================================
+# RESULT BUTTONS
+# ============================================================
 
-async def button_handler(
+async def result_callback(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE
 ):
 
     query = update.callback_query
 
-    if not query:
-        return
-
-    # -----------------------------------------------------
-    # ЗАВЕРШИТЬ ВВОД
-    # -----------------------------------------------------
-
-    if query.data == "finish_input":
-
-        await finish_input(
-
-            update,
-
-            context
-
-        )
-
+    if query is None:
         return
 
     await query.answer()
 
-    user_id = query.from_user.id
+    user = query.from_user
 
-    if not is_authorized(user_id):
-
-        await query.message.reply_text(
-
-            "⛔ У тебя нет доступа."
-
-        )
-
+    if user is None:
         return
 
-    action = query.data
+    user_id = user.id
 
-    # -----------------------------------------------------
-    # SKYSMART
-    # -----------------------------------------------------
+    callback = query.data
 
-    skysmart_data = (
-        user_last_skysmart_data.get(
+    # --------------------------------------------------------
+    # Skysmart
+    # --------------------------------------------------------
+
+    if user_id in user_last_skysmart_data:
+
+        data = user_last_skysmart_data[
             user_id
-        )
-    )
+        ]
 
-    if skysmart_data:
+        if callback == "format_mobile":
 
-        if action == "mobile":
-
-            result = make_skysmart_mobile(
-                skysmart_data
+            output = make_skysmart_mobile(
+                data
             )
 
-        elif action == "list":
+        elif callback == "format_list":
 
-            result = make_skysmart_list(
-                skysmart_data
+            output = make_skysmart_list(
+                data
             )
 
-        elif action == "compact":
+        elif callback == "format_compact":
 
-            result = make_skysmart_compact(
-                skysmart_data
+            output = make_skysmart_compact(
+                data
             )
 
-        elif action == "repeat":
+        elif callback == "format_repeat":
 
-            result = make_skysmart_mobile(
-                skysmart_data
+            output = make_skysmart_mobile(
+                data
             )
 
         else:
-
             return
 
-        if len(result) <= MAX_MESSAGE_LENGTH:
-
-            try:
-
-                await query.message.edit_text(
-
-                    result,
-
-                    parse_mode="HTML",
-
-                    reply_markup=get_result_keyboard()
-
-                )
-
-            except Exception as error:
-
-                print(
-
-                    "Ошибка изменения "
-                    "Skysmart сообщения:",
-
-                    error
-
-                )
-
-            return
-
-        try:
-
-            await query.message.edit_reply_markup(
-
-                reply_markup=None
-
-            )
-
-        except Exception:
-
-            pass
-
-        await send_result(
-
-            context.bot,
-
-            query.message.chat_id,
-
-            result
-
+        await send_long_message(
+            query.message,
+            output
         )
 
         return
 
-    # -----------------------------------------------------
-    # ОБЫЧНЫЕ ЗАДАНИЯ
-    # -----------------------------------------------------
+    # --------------------------------------------------------
+    # Ordinary tasks
+    # --------------------------------------------------------
 
-    questions = user_last_questions.get(
-        user_id
+    questions = user_last_texts.get(
+        user_id,
+        []
     )
 
     if not questions:
 
-        text = user_last_texts.get(
-            user_id
-        )
-
-        if text:
-
-            questions = parse_questions(
-                text
-            )
-
-    if not questions:
-
         await query.message.reply_text(
-
-            "⚠️ Исходные данные не найдены.\n\n"
-
-            "Пришли задания ещё раз."
-
+            "⚠️ Данные для форматирования не найдены."
         )
 
         return
 
-    # -----------------------------------------------------
-    # ФОРМАТ
-    # -----------------------------------------------------
+    if callback == "format_mobile":
 
-    if action == "mobile":
-
-        result = make_mobile(
+        output = make_mobile(
             questions
         )
 
-    elif action == "list":
+    elif callback == "format_list":
 
-        result = make_list(
+        output = make_list(
             questions
         )
 
-    elif action == "compact":
+    elif callback == "format_compact":
 
-        result = make_compact(
+        output = make_compact(
             questions
         )
 
-    elif action == "repeat":
+    elif callback == "format_repeat":
 
-        result = make_mobile(
+        output = make_mobile(
             questions
         )
 
     else:
-
         return
 
-    # -----------------------------------------------------
-    # КОРОТКИЙ
-    # -----------------------------------------------------
-
-    if len(result) <= MAX_MESSAGE_LENGTH:
-
-        try:
-
-            await query.message.edit_text(
-
-                result,
-
-                parse_mode="HTML",
-
-                reply_markup=get_result_keyboard()
-
-            )
-
-        except Exception as error:
-
-            print(
-
-                "Ошибка изменения сообщения:",
-
-                error
-
-            )
-
-        return
-
-    # -----------------------------------------------------
-    # ДЛИННЫЙ
-    # -----------------------------------------------------
-
-    try:
-
-        await query.message.edit_reply_markup(
-
-            reply_markup=None
-
-        )
-
-    except Exception:
-
-        pass
-
-    await send_result(
-
-        context.bot,
-
-        query.message.chat_id,
-
-        result
-
+    await send_long_message(
+        query.message,
+        output
     )
 
 
-# =========================================================
-# TELEGRAM APPLICATION
-# =========================================================
+# ============================================================
+# STARLETTE
+# ============================================================
 
-telegram_app = (
-
-    Application.builder()
-
-    .token(BOT_TOKEN)
-
-    .updater(None)
-
-    .build()
-
-)
-
-
-telegram_app.add_handler(
-
-    CommandHandler(
-
-        "start",
-
-        start
-
-    )
-
-)
-
-
-telegram_app.add_handler(
-
-    CommandHandler(
-
-        "id",
-
-        get_id
-
-    )
-
-)
-
-
-telegram_app.add_handler(
-
-    CommandHandler(
-
-        "keys",
-
-        keys_command
-
-    )
-
-)
-
-
-telegram_app.add_handler(
-
-    MessageHandler(
-
-        filters.TEXT
-        & ~filters.COMMAND,
-
-        echo
-
-    )
-
-)
-
-
-telegram_app.add_handler(
-
-    CallbackQueryHandler(
-
-        button_handler
-
-    )
-
-)
-
-
-# =========================================================
-# WEBHOOK
-# =========================================================
-
-async def telegram_webhook(
+async def index(
     request: Request
-) -> Response:
-
-    data = await request.json()
-
-    update = Update.de_json(
-
-        data,
-
-        telegram_app.bot
-
+):
+    return PlainTextResponse(
+        "Bot is running."
     )
 
-    await telegram_app.update_queue.put(
-        update
-    )
-
-    return Response("OK")
-
-
-# =========================================================
-# HEALTH
-# =========================================================
 
 async def health(
     request: Request
-) -> PlainTextResponse:
-
+):
     return PlainTextResponse(
-        "Bot is running!"
+        "OK"
     )
 
 
-# =========================================================
-# STARLETTE
-# =========================================================
+async def telegram_webhook(
+    request: Request
+):
 
-web_app = Starlette(
+    global telegram_app
 
-    routes=[
+    try:
 
-        Route(
+        data = await request.json()
 
-            "/",
+        update = Update.de_json(
+            data,
+            telegram_app.bot
+        )
 
-            health
+        await telegram_app.update_queue.put(
+            update
+        )
 
-        ),
+        return Response(
+            content="OK",
+            status_code=200
+        )
 
-        Route(
+    except Exception as e:
 
-            "/health",
+        print(
+            "Webhook error:",
+            repr(e)
+        )
 
-            health
+        return Response(
+            content="ERROR",
+            status_code=500
+        )
 
-        ),
 
-        Route(
+routes = [
+    Route(
+        "/",
+        index,
+        methods=["GET"]
+    ),
+    Route(
+        "/health",
+        health,
+        methods=["GET"]
+    ),
+    Route(
+        "/telegram",
+        telegram_webhook,
+        methods=["POST"]
+    ),
+]
 
-            "/telegram",
 
-            telegram_webhook,
-
-            methods=["POST"]
-
-        ),
-
-    ]
-
+app = Starlette(
+    routes=routes
 )
 
 
-# =========================================================
+# ============================================================
 # MAIN
-# =========================================================
+# ============================================================
 
 async def main():
 
-    if not BOT_TOKEN:
+    global telegram_app
 
-        raise ValueError(
-            "Не задана BOT_TOKEN"
-        )
+    print("Starting bot...")
 
-    if not RENDER_URL:
-
-        raise ValueError(
-            "Не задана RENDER_URL"
-        )
-
-    if not SUPABASE_URL:
-
-        raise ValueError(
-            "Не задана SUPABASE_URL"
-        )
-
-    if not SUPABASE_SERVICE_KEY:
-
-        raise ValueError(
-            "Не задана SUPABASE_SERVICE_KEY"
-        )
-
-    if not OWNER_ID:
-
-        raise ValueError(
-            "Не задана OWNER_ID"
-        )
-
-    # -----------------------------------------------------
-    # ПАРОЛИ
-    # -----------------------------------------------------
+    init_supabase()
 
     initialize_passwords()
 
-    # -----------------------------------------------------
-    # TELEGRAM
-    # -----------------------------------------------------
+    telegram_app = (
+        Application
+        .builder()
+        .token(BOT_TOKEN)
+        .updater(None)
+        .build()
+    )
+
+    telegram_app.add_handler(
+        CommandHandler(
+            "start",
+            start_command
+        )
+    )
+
+    telegram_app.add_handler(
+        CommandHandler(
+            "id",
+            id_command
+        )
+    )
+
+    telegram_app.add_handler(
+        CommandHandler(
+            "keys",
+            keys_command
+        )
+    )
+
+    telegram_app.add_handler(
+        CallbackQueryHandler(
+            finish_input,
+            pattern=r"^finish_input$"
+        )
+    )
+
+    telegram_app.add_handler(
+        CallbackQueryHandler(
+            result_callback,
+            pattern=r"^format_"
+        )
+    )
+
+    telegram_app.add_handler(
+        MessageHandler(
+            filters.TEXT & ~filters.COMMAND,
+            text_message
+        )
+    )
 
     await telegram_app.initialize()
 
     await telegram_app.start()
 
-    # -----------------------------------------------------
-    # WEBHOOK
-    # -----------------------------------------------------
-
-    await telegram_app.bot.set_webhook(
-
-        url=f"{RENDER_URL}/telegram",
-
-        allowed_updates=Update.ALL_TYPES
-
+    webhook_url = (
+        f"{RENDER_URL}/telegram"
     )
 
-    # -----------------------------------------------------
-    # UVICORN
-    # -----------------------------------------------------
+    print(
+        "Setting webhook:",
+        webhook_url
+    )
+
+    await telegram_app.bot.set_webhook(
+        url=webhook_url
+    )
+
+    print(
+        "Bot started successfully."
+    )
 
     config = uvicorn.Config(
-
-        web_app,
-
+        app,
         host="0.0.0.0",
-
-        port=PORT
-
+        port=PORT,
+        log_level="info",
     )
 
     server = uvicorn.Server(
         config
     )
 
-    print(
-        f"Бот запущен на порту {PORT}"
-    )
+    await server.serve()
 
-    print(
-        f"Webhook: {RENDER_URL}/telegram"
-    )
-
-    try:
-
-        await server.serve()
-
-    finally:
-
-        await telegram_app.stop()
-
-        await telegram_app.shutdown()
-
-
-# =========================================================
-# ЗАПУСК
-# =========================================================
 
 if __name__ == "__main__":
 
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+
+    except KeyboardInterrupt:
+        pass
