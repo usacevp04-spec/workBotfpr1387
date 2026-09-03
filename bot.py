@@ -108,7 +108,7 @@ MAIN_KEYBOARD = ReplyKeyboardMarkup(
     [
         [
             "📚 Skysmart",
-            "📄 Google Forms"
+            "📄 Google Forms (пока не работает!)"
         ],
         [
             "ℹ️ Помощь"
