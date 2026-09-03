@@ -5,7 +5,6 @@ import hashlib
 import secrets
 import asyncio
 import json
-import urllib.parse
 
 import requests
 import uvicorn
@@ -51,14 +50,22 @@ OWNER_ID = os.getenv("OWNER_ID")
 
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
 GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET")
+
 GOOGLE_REDIRECT_URI = os.getenv(
     "GOOGLE_REDIRECT_URI",
     f"{RENDER_URL}/google/callback"
 )
 
-PORT = int(os.getenv("PORT", "10000"))
+PORT = int(
+    os.getenv(
+        "PORT",
+        "10000"
+    )
+)
 
-SKYSMART_API = "https://skysmart-answers.vercel.app/get_answers/"
+SKYSMART_API = (
+    "https://skysmart-answers.vercel.app/get_answers/"
+)
 
 MAX_MESSAGE_LENGTH = 3900
 
@@ -73,41 +80,55 @@ GOOGLE_FORMS_SCOPE = (
 
 GOOGLE_TOKEN_ACCOUNT = "main"
 
-# Временные OAuth state.
-# Используются только во время первоначального подключения.
-google_oauth_states = set()
-
 
 # ============================================================
 # ПРОВЕРКА НАСТРОЕК
 # ============================================================
 
 if not BOT_TOKEN:
-    raise RuntimeError("Не задан BOT_TOKEN")
+    raise RuntimeError(
+        "Не задан BOT_TOKEN"
+    )
 
 if not RENDER_URL:
-    raise RuntimeError("Не задан RENDER_URL")
+    raise RuntimeError(
+        "Не задан RENDER_URL"
+    )
 
 if not SUPABASE_URL:
-    raise RuntimeError("Не задан SUPABASE_URL")
+    raise RuntimeError(
+        "Не задан SUPABASE_URL"
+    )
 
 if not SUPABASE_SERVICE_KEY:
-    raise RuntimeError("Не задан SUPABASE_SERVICE_KEY")
+    raise RuntimeError(
+        "Не задан SUPABASE_SERVICE_KEY"
+    )
 
 if not OWNER_ID:
-    raise RuntimeError("Не задан OWNER_ID")
+    raise RuntimeError(
+        "Не задан OWNER_ID"
+    )
 
 if not GOOGLE_CLIENT_ID:
-    raise RuntimeError("Не задан GOOGLE_CLIENT_ID")
+    raise RuntimeError(
+        "Не задан GOOGLE_CLIENT_ID"
+    )
 
 if not GOOGLE_CLIENT_SECRET:
-    raise RuntimeError("Не задан GOOGLE_CLIENT_SECRET")
+    raise RuntimeError(
+        "Не задан GOOGLE_CLIENT_SECRET"
+    )
 
 if not GOOGLE_REDIRECT_URI:
-    raise RuntimeError("Не задан GOOGLE_REDIRECT_URI")
+    raise RuntimeError(
+        "Не задан GOOGLE_REDIRECT_URI"
+    )
 
 
-OWNER_ID = int(OWNER_ID)
+OWNER_ID = int(
+    OWNER_ID
+)
 
 
 # ============================================================
@@ -138,8 +159,13 @@ application = (
 
 MAIN_KEYBOARD = ReplyKeyboardMarkup(
     [
-        ["📚 Skysmart", "📄 Google Forms"],
-        ["ℹ️ Помощь"],
+        [
+            "📚 Skysmart",
+            "📄 Google Forms"
+        ],
+        [
+            "ℹ️ Помощь"
+        ],
     ],
     resize_keyboard=True,
 )
@@ -152,11 +178,21 @@ MAIN_KEYBOARD = ReplyKeyboardMarkup(
 user_modes = {}
 
 
-def get_user_mode(user_id: int) -> str:
-    return user_modes.get(user_id, "skysmart")
+def get_user_mode(
+    user_id: int
+) -> str:
+
+    return user_modes.get(
+        user_id,
+        "skysmart"
+    )
 
 
-def set_user_mode(user_id: int, mode: str):
+def set_user_mode(
+    user_id: int,
+    mode: str
+):
+
     user_modes[user_id] = mode
 
 
@@ -164,7 +200,9 @@ def set_user_mode(user_id: int, mode: str):
 # ПАРОЛИ
 # ============================================================
 
-def hash_password(password: str) -> str:
+def hash_password(
+    password: str
+) -> str:
 
     return hashlib.sha256(
         password.encode("utf-8")
@@ -173,7 +211,9 @@ def hash_password(password: str) -> str:
 
 def generate_password() -> str:
 
-    alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+    alphabet = (
+        "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+    )
 
     first = "".join(
         secrets.choice(alphabet)
@@ -196,36 +236,51 @@ def initialize_passwords():
             supabase
             .table("bot_passwords")
             .select("id")
-            .eq("used", False)
+            .eq(
+                "used",
+                False
+            )
             .execute()
         )
 
-        current_count = len(result.data or [])
+        current_count = len(
+            result.data or []
+        )
 
         while current_count < 10:
 
             password = generate_password()
 
-            password_hash = hash_password(password)
+            password_hash = hash_password(
+                password
+            )
 
             existing = (
                 supabase
                 .table("bot_passwords")
                 .select("id")
-                .eq("password_hash", password_hash)
+                .eq(
+                    "password_hash",
+                    password_hash
+                )
                 .execute()
             )
 
             if existing.data:
                 continue
 
-            supabase.table("bot_passwords").insert({
-                "password_hash": password_hash,
-                "password_text": password,
-                "used": False,
-                "used_by": None,
-                "used_at": None,
-            }).execute()
+            (
+                supabase
+                .table("bot_passwords")
+                .insert({
+                    "password_hash": password_hash,
+                    "password_text": password,
+                    "used": False,
+                    "used_by": None,
+                    "used_at": None,
+                })
+                .execute()
+            )
 
             current_count += 1
 
@@ -244,7 +299,9 @@ def initialize_passwords():
 # ПОЛЬЗОВАТЕЛИ
 # ============================================================
 
-def is_authorized(user_id: int) -> bool:
+def is_authorized(
+    user_id: int
+) -> bool:
 
     try:
 
@@ -252,7 +309,10 @@ def is_authorized(user_id: int) -> bool:
             supabase
             .table("bot_users")
             .select("authorized")
-            .eq("telegram_id", user_id)
+            .eq(
+                "telegram_id",
+                user_id
+            )
             .limit(1)
             .execute()
         )
@@ -261,7 +321,9 @@ def is_authorized(user_id: int) -> bool:
             return False
 
         return bool(
-            result.data[0].get("authorized")
+            result.data[0].get(
+                "authorized"
+            )
         )
 
     except Exception as e:
@@ -273,7 +335,9 @@ def is_authorized(user_id: int) -> bool:
         return False
 
 
-def create_user_if_needed(user_id: int):
+def create_user_if_needed(
+    user_id: int
+):
 
     try:
 
@@ -281,17 +345,25 @@ def create_user_if_needed(user_id: int):
             supabase
             .table("bot_users")
             .select("telegram_id")
-            .eq("telegram_id", user_id)
+            .eq(
+                "telegram_id",
+                user_id
+            )
             .limit(1)
             .execute()
         )
 
         if not result.data:
 
-            supabase.table("bot_users").insert({
-                "telegram_id": user_id,
-                "authorized": False,
-            }).execute()
+            (
+                supabase
+                .table("bot_users")
+                .insert({
+                    "telegram_id": user_id,
+                    "authorized": False,
+                })
+                .execute()
+            )
 
     except Exception as e:
 
@@ -305,9 +377,15 @@ def use_password(
     user_id: int
 ) -> bool:
 
-    password = password.strip().upper()
+    password = (
+        password
+        .strip()
+        .upper()
+    )
 
-    password_hash = hash_password(password)
+    password_hash = hash_password(
+        password
+    )
 
     try:
 
@@ -315,8 +393,14 @@ def use_password(
             supabase
             .table("bot_passwords")
             .select("*")
-            .eq("password_hash", password_hash)
-            .eq("used", False)
+            .eq(
+                "password_hash",
+                password_hash
+            )
+            .eq(
+                "used",
+                False
+            )
             .limit(1)
             .execute()
         )
@@ -326,20 +410,32 @@ def use_password(
 
         password_row = result.data[0]
 
-        supabase.table("bot_passwords").update({
-            "used": True,
-            "used_by": user_id,
-        }).eq(
-            "id",
-            password_row["id"]
-        ).execute()
+        (
+            supabase
+            .table("bot_passwords")
+            .update({
+                "used": True,
+                "used_by": user_id,
+            })
+            .eq(
+                "id",
+                password_row["id"]
+            )
+            .execute()
+        )
 
-        supabase.table("bot_users").update({
-            "authorized": True,
-        }).eq(
-            "telegram_id",
-            user_id
-        ).execute()
+        (
+            supabase
+            .table("bot_users")
+            .update({
+                "authorized": True,
+            })
+            .eq(
+                "telegram_id",
+                user_id
+            )
+            .execute()
+        )
 
         return True
 
@@ -353,7 +449,7 @@ def use_password(
 
 
 # ============================================================
-# GOOGLE OAUTH
+# GOOGLE OAUTH CONFIG
 # ============================================================
 
 def get_google_client_config():
@@ -362,8 +458,12 @@ def get_google_client_config():
         "web": {
             "client_id": GOOGLE_CLIENT_ID,
             "client_secret": GOOGLE_CLIENT_SECRET,
-            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-            "token_uri": "https://oauth2.googleapis.com/token",
+            "auth_uri": (
+                "https://accounts.google.com/o/oauth2/auth"
+            ),
+            "token_uri": (
+                "https://oauth2.googleapis.com/token"
+            ),
             "redirect_uris": [
                 GOOGLE_REDIRECT_URI
             ],
@@ -377,7 +477,9 @@ def create_google_flow(
 
     flow = Flow.from_client_config(
         get_google_client_config(),
-        scopes=[GOOGLE_FORMS_SCOPE],
+        scopes=[
+            GOOGLE_FORMS_SCOPE
+        ],
         redirect_uri=GOOGLE_REDIRECT_URI,
     )
 
@@ -386,6 +488,102 @@ def create_google_flow(
 
     return flow
 
+
+# ============================================================
+# GOOGLE OAUTH STATE
+# ============================================================
+
+def save_google_oauth_state(
+    state: str,
+    user_id: int
+):
+
+    try:
+
+        (
+            supabase
+            .table("google_oauth_states")
+            .insert({
+                "state": state,
+                "user_id": user_id,
+            })
+            .execute()
+        )
+
+        print(
+            "OAuth state сохранён."
+        )
+
+        return True
+
+    except Exception as e:
+
+        print(
+            f"Ошибка сохранения OAuth state: {e}"
+        )
+
+        return False
+
+
+def get_google_oauth_state(
+    state: str
+):
+
+    try:
+
+        result = (
+            supabase
+            .table("google_oauth_states")
+            .select("*")
+            .eq(
+                "state",
+                state
+            )
+            .limit(1)
+            .execute()
+        )
+
+        if not result.data:
+            return None
+
+        return result.data[0]
+
+    except Exception as e:
+
+        print(
+            f"Ошибка получения OAuth state: {e}"
+        )
+
+        return None
+
+
+def delete_google_oauth_state(
+    state: str
+):
+
+    try:
+
+        (
+            supabase
+            .table("google_oauth_states")
+            .delete()
+            .eq(
+                "state",
+                state
+            )
+            .execute()
+        )
+
+    except Exception as e:
+
+        print(
+            f"Ошибка удаления OAuth state: {e}"
+        )
+
+
+# ============================================================
+# GOOGLE TOKEN
+# ============================================================
 
 def get_saved_google_credentials():
 
@@ -406,16 +604,23 @@ def get_saved_google_credentials():
         if not result.data:
             return None
 
-        token_json = result.data[0].get(
-            "token_json"
+        token_json = (
+            result.data[0].get(
+                "token_json"
+            )
         )
 
         if not token_json:
             return None
 
-        credentials = Credentials.from_authorized_user_info(
-            json.loads(token_json),
-            scopes=[GOOGLE_FORMS_SCOPE]
+        credentials = (
+            Credentials
+            .from_authorized_user_info(
+                json.loads(token_json),
+                scopes=[
+                    GOOGLE_FORMS_SCOPE
+                ]
+            )
         )
 
         return credentials
@@ -452,27 +657,33 @@ def save_google_credentials(
         payload = {
             "account_name": GOOGLE_TOKEN_ACCOUNT,
             "token_json": token_json,
-            "updated_at": "now()",
         }
 
         if existing.data:
 
-            supabase.table(
-                "google_tokens"
-            ).update(
-                payload
-            ).eq(
-                "account_name",
-                GOOGLE_TOKEN_ACCOUNT
-            ).execute()
+            (
+                supabase
+                .table("google_tokens")
+                .update(
+                    payload
+                )
+                .eq(
+                    "account_name",
+                    GOOGLE_TOKEN_ACCOUNT
+                )
+                .execute()
+            )
 
         else:
 
-            supabase.table(
-                "google_tokens"
-            ).insert(
-                payload
-            ).execute()
+            (
+                supabase
+                .table("google_tokens")
+                .insert(
+                    payload
+                )
+                .execute()
+            )
 
         print(
             "Google OAuth token сохранён."
@@ -489,19 +700,28 @@ def save_google_credentials(
 
 def get_google_service():
 
-    credentials = get_saved_google_credentials()
+    credentials = (
+        get_saved_google_credentials()
+    )
 
     if not credentials:
+
         return None
 
-    # Если access token истёк,
-    # google-auth автоматически использует
-    # refresh token при обращении к API.
-    if credentials.expired and credentials.refresh_token:
+    # ========================================================
+    # ОБНОВЛЕНИЕ ACCESS TOKEN
+    # ========================================================
+
+    if (
+        not credentials.valid
+        and credentials.refresh_token
+    ):
 
         try:
 
-            from google.auth.transport.requests import Request as GoogleRequest
+            from google.auth.transport.requests import (
+                Request as GoogleRequest
+            )
 
             credentials.refresh(
                 GoogleRequest()
@@ -539,32 +759,63 @@ def get_google_service():
         return None
 
 
-def extract_google_form_id(text: str):
+# ============================================================
+# GOOGLE FORM ID
+# ============================================================
 
-    patterns = [
+def extract_google_form_id(
+    text: str
+):
 
-        # https://docs.google.com/forms/d/FORM_ID/edit
-        r"docs\.google\.com/forms/d/([a-zA-Z0-9_-]+)",
+    # ========================================================
+    # Обычная ссылка:
+    #
+    # /forms/d/FORM_ID/edit
+    # /forms/d/FORM_ID/viewform
+    # ========================================================
 
-        # https://docs.google.com/forms/d/e/FORM_ID/viewform
-        r"docs\.google\.com/forms/d/e/([a-zA-Z0-9_-]+)",
+    match = re.search(
+        r"https?://docs\.google\.com/forms/d/"
+        r"([a-zA-Z0-9_-]+)"
+        r"(?:/[^?\s]*)?",
+        text,
+        flags=re.IGNORECASE
+    )
 
-    ]
+    if match:
 
-    for pattern in patterns:
+        form_id = match.group(1)
 
-        match = re.search(
-            pattern,
-            text,
-            flags=re.IGNORECASE
-        )
+        # Для /d/e/... первый regex может
+        # получить "e".
+        if form_id.lower() != "e":
 
-        if match:
+            return form_id
 
-            return match.group(1)
+    # ========================================================
+    # Опубликованная ссылка:
+    #
+    # /forms/d/e/FORM_ID/viewform
+    # ========================================================
+
+    match = re.search(
+        r"https?://docs\.google\.com/forms/d/e/"
+        r"([a-zA-Z0-9_-]+)"
+        r"(?:/[^?\s]*)?",
+        text,
+        flags=re.IGNORECASE
+    )
+
+    if match:
+
+        return match.group(1)
 
     return None
 
+
+# ============================================================
+# GOOGLE FORM API
+# ============================================================
 
 def get_google_form(
     form_id: str
@@ -578,10 +829,19 @@ def get_google_form(
             "Google аккаунт ещё не подключён."
         )
 
-    return service.forms().get(
-        formId=form_id
-    ).execute()
+    return (
+        service
+        .forms()
+        .get(
+            formId=form_id
+        )
+        .execute()
+    )
 
+
+# ============================================================
+# GOOGLE FORM FORMAT
+# ============================================================
 
 def format_google_form(
     form_data
@@ -591,6 +851,7 @@ def format_google_form(
         form_data,
         dict
     ):
+
         return (
             "❌ Google Forms вернул "
             "неожиданный ответ."
@@ -637,7 +898,10 @@ def format_google_form(
         if clean_description:
 
             lines.append(
-                f"ℹ️ {html.escape(clean_description)}"
+                "ℹ️ "
+                + html.escape(
+                    clean_description
+                )
             )
 
     lines.append("")
@@ -661,10 +925,8 @@ def format_google_form(
             "questionItem"
         )
 
-        # Не вопрос — например,
-        # заголовок/описание раздела.
+        # Это не вопрос.
         if not question_item:
-
             continue
 
         question_number += 1
@@ -679,13 +941,17 @@ def format_google_form(
             {}
         )
 
-        question_type = question.get(
+        # ====================================================
+        # ВАРИАНТЫ ОТВЕТА
+        # ====================================================
+
+        choice_question = question.get(
             "choiceQuestion"
         )
 
-        if question_type:
+        if choice_question:
 
-            choices = question_type.get(
+            choices = choice_question.get(
                 "options",
                 []
             )
@@ -706,9 +972,15 @@ def format_google_form(
                 if value:
 
                     lines.append(
-                        f"   • "
-                        f"{html.escape(str(value))}"
+                        "   • "
+                        + html.escape(
+                            str(value)
+                        )
                     )
+
+        # ====================================================
+        # ТЕКСТОВОЕ ПОЛЕ
+        # ====================================================
 
         text_question = question.get(
             "textQuestion"
@@ -717,8 +989,13 @@ def format_google_form(
         if text_question:
 
             lines.append(
-                "   ✏️ <i>Поле для ввода ответа</i>"
+                "   ✏️ "
+                "<i>Поле для ввода ответа</i>"
             )
+
+        # ====================================================
+        # ШКАЛА
+        # ====================================================
 
         scale_question = question.get(
             "scaleQuestion"
@@ -754,18 +1031,23 @@ def format_google_form(
             if low_label:
 
                 scale_text += (
-                    f" ({low_label}"
+                    f" ({html.escape(str(low_label))}"
                 )
 
             if high_label:
 
                 if low_label:
+
                     scale_text += (
-                        f" → {high_label})"
+                        f" → "
+                        f"{html.escape(str(high_label))})"
                     )
+
                 else:
+
                     scale_text += (
-                        f" ({high_label})"
+                        f" ("
+                        f"{html.escape(str(high_label))})"
                     )
 
             elif low_label:
@@ -808,7 +1090,13 @@ async def google_command(
 
     user_id = update.effective_user.id
 
-    if not is_authorized(user_id):
+    # --------------------------------------------------------
+    # ПРОВЕРКА АВТОРИЗАЦИИ БОТА
+    # --------------------------------------------------------
+
+    if not is_authorized(
+        user_id
+    ):
 
         await update.message.reply_text(
             "⛔ Сначала авторизуйтесь в боте."
@@ -816,9 +1104,43 @@ async def google_command(
 
         return
 
-    state = secrets.token_urlsafe(32)
+    # --------------------------------------------------------
+    # GOOGLE МОЖЕТ ПОДКЛЮЧАТЬ ТОЛЬКО OWNER
+    # --------------------------------------------------------
 
-    google_oauth_states.add(state)
+    if user_id != OWNER_ID:
+
+        await update.message.reply_text(
+            "⛔ Подключать Google может "
+            "только владелец бота."
+        )
+
+        return
+
+    # --------------------------------------------------------
+    # СОЗДАЁМ STATE
+    # --------------------------------------------------------
+
+    state = secrets.token_urlsafe(
+        32
+    )
+
+    if not save_google_oauth_state(
+        state,
+        user_id
+    ):
+
+        await update.message.reply_text(
+            "❌ Не удалось создать "
+            "OAuth-сессию.\n\n"
+            "Попробуйте ещё раз."
+        )
+
+        return
+
+    # --------------------------------------------------------
+    # СОЗДАЁМ GOOGLE FLOW
+    # --------------------------------------------------------
 
     flow = create_google_flow(
         state=state
@@ -831,6 +1153,28 @@ async def google_command(
             include_granted_scopes="true"
         )
     )
+
+    # Обычно returned_state == state.
+    # Но сохраняем именно тот state,
+    # который вернул OAuth flow.
+
+    if returned_state != state:
+
+        delete_google_oauth_state(
+            state
+        )
+
+        if not save_google_oauth_state(
+            returned_state,
+            user_id
+        ):
+
+            await update.message.reply_text(
+                "❌ Не удалось сохранить "
+                "OAuth-сессию."
+            )
+
+            return
 
     keyboard = InlineKeyboardMarkup([
         [
@@ -845,8 +1189,8 @@ async def google_command(
         "🔐 <b>Подключение Google-аккаунта</b>\n\n"
         "Нажмите кнопку ниже и войдите "
         "именно в созданный аккаунт-пустышку.\n\n"
-        "После подтверждения Google вернёт "
-        "вас на наш сервер.",
+        "После подтверждения Google "
+        "автоматически вернёт вас на сервер.",
         parse_mode="HTML",
         reply_markup=keyboard
     )
@@ -869,10 +1213,23 @@ async def google_callback(
         return HTMLResponse(
             f"""
             <html>
+            <head>
+                <meta charset="utf-8">
+                <title>Google OAuth</title>
+            </head>
+
             <body>
+
             <h2>❌ Google авторизация отменена</h2>
-            <p>{html.escape(error)}</p>
-            <p>Можно закрыть эту страницу.</p>
+
+            <p>
+            {html.escape(error)}
+            </p>
+
+            <p>
+            Можно закрыть эту страницу.
+            </p>
+
             </body>
             </html>
             """,
@@ -892,63 +1249,159 @@ async def google_callback(
         return HTMLResponse(
             """
             <html>
+            <head>
+                <meta charset="utf-8">
+            </head>
+
             <body>
+
             <h2>❌ Неверный OAuth callback</h2>
-            <p>Не хватает параметров state или code.</p>
+
+            <p>
+            Не хватает параметров state или code.
+            </p>
+
             </body>
             </html>
             """,
             status_code=400
         )
 
-    if state not in google_oauth_states:
+    # ========================================================
+    # ПРОВЕРЯЕМ STATE В SUPABASE
+    # ========================================================
+
+    oauth_state = get_google_oauth_state(
+        state
+    )
+
+    if not oauth_state:
+
+        return HTMLResponse(
+            """
+            <html>
+            <head>
+                <meta charset="utf-8">
+                <title>OAuth ошибка</title>
+            </head>
+
+            <body>
+
+            <h2>❌ OAuth-сессия недействительна</h2>
+
+            <p>
+            Эта OAuth-сессия уже истекла
+            или не существует.
+            </p>
+
+            <p>
+            Вернитесь в Telegram
+            и запустите /google ещё раз.
+            </p>
+
+            </body>
+            </html>
+            """,
+            status_code=400
+        )
+
+    # ========================================================
+    # ПРОВЕРЯЕМ, ЧТО STATE ПРИНАДЛЕЖИТ OWNER
+    # ========================================================
+
+    state_user_id = oauth_state.get(
+        "user_id"
+    )
+
+    if state_user_id != OWNER_ID:
+
+        delete_google_oauth_state(
+            state
+        )
 
         return HTMLResponse(
             """
             <html>
             <body>
-            <h2>❌ OAuth-сессия недействительна</h2>
-            <p>Попробуйте запустить /google ещё раз.</p>
+
+            <h2>❌ Недействительная OAuth-сессия</h2>
+
             </body>
             </html>
             """,
-            status_code=400
+            status_code=403
         )
 
-    google_oauth_states.discard(
-        state
-    )
-
     try:
+
+        # ====================================================
+        # СОЗДАЁМ FLOW
+        # ====================================================
 
         flow = create_google_flow(
             state=state
         )
 
+        # ====================================================
+        # ПОЛУЧАЕМ TOKEN
+        # ====================================================
+
         flow.fetch_token(
-            code=code
+            authorization_response=str(
+                request.url
+            )
         )
 
         credentials = flow.credentials
+
+        # ====================================================
+        # ПРОВЕРЯЕМ REFRESH TOKEN
+        # ====================================================
 
         if not credentials.refresh_token:
 
             return HTMLResponse(
                 """
                 <html>
+                <head>
+                    <meta charset="utf-8">
+                </head>
+
                 <body>
-                <h2>❌ Google не выдал refresh token</h2>
+
+                <h2>
+                ❌ Google не выдал refresh token
+                </h2>
+
                 <p>
-                Попробуйте снова и разрешите доступ.
+                Вернитесь в Telegram
+                и запустите /google ещё раз.
                 </p>
+
                 </body>
                 </html>
                 """,
                 status_code=400
             )
 
+        # ====================================================
+        # СОХРАНЯЕМ TOKEN
+        # ====================================================
+
         save_google_credentials(
             credentials
+        )
+
+        # ====================================================
+        # УДАЛЯЕМ ИСПОЛЬЗОВАННЫЙ STATE
+        # ====================================================
+
+        delete_google_oauth_state(
+            state
+        )
+
+        print(
+            "Google OAuth успешно завершён."
         )
 
         return HTMLResponse(
@@ -958,15 +1411,21 @@ async def google_callback(
                 <meta charset="utf-8">
                 <title>Google подключён</title>
             </head>
+
             <body>
-                <h2>✅ Google успешно подключён!</h2>
-                <p>
-                Аккаунт-пустышка авторизован.
-                </p>
-                <p>
-                Теперь можно вернуться в Telegram
-                и отправить ссылку на Google Form.
-                </p>
+
+            <h2>✅ Google успешно подключён!</h2>
+
+            <p>
+            Аккаунт-пустышка успешно авторизован.
+            </p>
+
+            <p>
+            Теперь можно закрыть эту страницу,
+            вернуться в Telegram и выбрать
+            «📄 Google Forms».
+            </p>
+
             </body>
             </html>
             """
@@ -984,15 +1443,20 @@ async def google_callback(
             <head>
                 <meta charset="utf-8">
             </head>
+
             <body>
-                <h2>❌ Ошибка авторизации Google</h2>
-                <p>
-                Не удалось сохранить авторизацию.
-                </p>
-                <p>
-                Проверьте настройки Google Cloud
-                и попробуйте ещё раз.
-                </p>
+
+            <h2>❌ Ошибка авторизации Google</h2>
+
+            <p>
+            Не удалось завершить авторизацию.
+            </p>
+
+            <p>
+            Проверьте настройки Google Cloud
+            и попробуйте снова через /google.
+            </p>
+
             </body>
             </html>
             """,
@@ -1017,9 +1481,13 @@ async def start_command(
 
     user_id = update.effective_user.id
 
-    create_user_if_needed(user_id)
+    create_user_if_needed(
+        user_id
+    )
 
-    if is_authorized(user_id):
+    if is_authorized(
+        user_id
+    ):
 
         await update.message.reply_text(
             "🤖 <b>Добро пожаловать!</b>\n\n"
@@ -1031,7 +1499,8 @@ async def start_command(
         return
 
     await update.message.reply_text(
-        "🔐 Для использования бота нужен пароль.\n\n"
+        "🔐 Для использования бота "
+        "нужен пароль.\n\n"
         "Введите пароль:"
     )
 
@@ -1089,7 +1558,10 @@ async def keys_command(
             supabase
             .table("bot_passwords")
             .select("*")
-            .eq("used", False)
+            .eq(
+                "used",
+                False
+            )
             .order("id")
             .execute()
         )
@@ -1104,7 +1576,9 @@ async def keys_command(
 
             return
 
-        text = "🔑 Свободные пароли:\n\n"
+        text = (
+            "🔑 Свободные пароли:\n\n"
+        )
 
         for index, row in enumerate(
             passwords,
@@ -1128,7 +1602,8 @@ async def keys_command(
         )
 
         await update.message.reply_text(
-            "❌ Не удалось получить список паролей."
+            "❌ Не удалось получить "
+            "список паролей."
         )
 
 
@@ -1136,7 +1611,9 @@ async def keys_command(
 # LATEX → ЧИТАЕМЫЙ ВИД
 # ============================================================
 
-def latex_to_readable(text: str) -> str:
+def latex_to_readable(
+    text: str
+) -> str:
 
     if not text:
         return text
@@ -1225,7 +1702,9 @@ def latex_to_readable(text: str) -> str:
         numerator = match.group(1)
         denominator = match.group(2)
 
-        return f"({numerator}/{denominator})"
+        return (
+            f"({numerator}/{denominator})"
+        )
 
     text = re.sub(
         r"\\(?:dfrac|tfrac|frac)\s*"
@@ -1260,11 +1739,14 @@ def latex_to_readable(text: str) -> str:
             char in "0123456789+-=()nix"
             for char in content
         ):
+
             return content.translate(
                 superscript_map
             )
 
-        return f"^({content})"
+        return (
+            f"^({content})"
+        )
 
     text = re.sub(
         r"\^\s*\{([^{}]*)\}",
@@ -1273,38 +1755,56 @@ def latex_to_readable(text: str) -> str:
     )
 
     replacements = {
+
         r"\mathbb{R}": "ℝ",
         r"\mathbb R": "ℝ",
         r"\R": "ℝ",
+
         r"\infty": "∞",
+
         r"\leq": "≤",
         r"\le": "≤",
+
         r"\geq": "≥",
         r"\ge": "≥",
+
         r"\neq": "≠",
         r"\ne": "≠",
+
         r"\pm": "±",
         r"\mp": "∓",
+
         r"\times": "×",
         r"\cdot": "·",
         r"\div": "÷",
+
         r"\in": "∈",
         r"\notin": "∉",
+
         r"\subset": "⊂",
         r"\subseteq": "⊆",
+
         r"\cup": "∪",
         r"\cap": "∩",
+
         r"\rightarrow": "→",
         r"\to": "→",
+
         r"\leftarrow": "←",
+
         r"\Rightarrow": "⇒",
         r"\Leftrightarrow": "⇔",
+
         r"\approx": "≈",
         r"\sim": "∼",
     }
 
     for old, new in replacements.items():
-        text = text.replace(old, new)
+
+        text = text.replace(
+            old,
+            new
+        )
 
     text = re.sub(
         r"\\(?:Bigg|bigg|Big|big|left|right|middle)\b",
@@ -1342,8 +1842,15 @@ def latex_to_readable(text: str) -> str:
         text
     )
 
-    text = text.replace("{", "")
-    text = text.replace("}", "")
+    text = text.replace(
+        "{",
+        ""
+    )
+
+    text = text.replace(
+        "}",
+        ""
+    )
 
     text = re.sub(
         r"\\\s*(>)",
@@ -1390,16 +1897,24 @@ def latex_to_readable(text: str) -> str:
     return text.strip()
 
 
-def clean_skysmart_text(value) -> str:
+def clean_skysmart_text(
+    value
+) -> str:
 
     if value is None:
         return ""
 
-    text = str(value)
+    text = str(
+        value
+    )
 
-    text = html.unescape(text)
+    text = html.unescape(
+        text
+    )
 
-    text = latex_to_readable(text)
+    text = latex_to_readable(
+        text
+    )
 
     return text.strip()
 
@@ -1408,7 +1923,9 @@ def clean_skysmart_text(value) -> str:
 # SKYSMART URL
 # ============================================================
 
-def extract_room_name(text: str):
+def extract_room_name(
+    text: str
+):
 
     pattern = (
         r"https?://edu\.skysmart\.ru/"
@@ -1497,6 +2014,7 @@ def get_task_question(
         return ""
 
     possible_keys = [
+
         "question",
         "question_text",
         "questionText",
@@ -1508,7 +2026,9 @@ def get_task_question(
 
     for key in possible_keys:
 
-        value = task.get(key)
+        value = task.get(
+            key
+        )
 
         if value not in (
             None,
@@ -1533,6 +2053,7 @@ def get_task_answer(
         return ""
 
     possible_keys = [
+
         "answer",
         "answers",
         "correct_answer",
@@ -1543,7 +2064,9 @@ def get_task_answer(
 
     for key in possible_keys:
 
-        value = task.get(key)
+        value = task.get(
+            key
+        )
 
         if value not in (
             None,
@@ -1586,13 +2109,17 @@ def format_skysmart(
         data,
         list
     ):
+
         return (
             "❌ Неожиданный ответ "
             "от сервера."
         )
 
     if not data:
-        return "❌ Ответ пустой."
+
+        return (
+            "❌ Ответ пустой."
+        )
 
     tasks = data[0]
 
@@ -1600,6 +2127,7 @@ def format_skysmart(
         tasks,
         list
     ):
+
         return (
             "❌ Не удалось получить "
             "список заданий."
@@ -1654,6 +2182,7 @@ def split_message(
 ):
 
     if len(text) <= max_length:
+
         return [text]
 
     chunks = []
@@ -1705,6 +2234,7 @@ def split_message(
         else:
 
             if current:
+
                 chunks.append(
                     current
                 )
@@ -1712,6 +2242,7 @@ def split_message(
             current = block
 
     if current:
+
         chunks.append(
             current
         )
@@ -1738,7 +2269,7 @@ async def send_long_message(
 
 
 # ============================================================
-# ОБРАБОТКА GOOGLE FORMS
+# GOOGLE FORMS
 # ============================================================
 
 async def handle_google_forms(
@@ -1800,11 +2331,19 @@ async def handle_google_forms(
             None
         )
 
-        if status == 403:
+        if status == 401:
 
             message = (
-                "❌ Google не разрешил "
-                "доступ к этой форме.\n\n"
+                "🔐 <b>Авторизация Google "
+                "истекла.</b>\n\n"
+                "Запустите /google ещё раз."
+            )
+
+        elif status == 403:
+
+            message = (
+                "❌ <b>Google не разрешил "
+                "доступ к этой форме.</b>\n\n"
                 "Проверьте, что аккаунт-пустышка "
                 "имеет доступ к форме."
             )
@@ -1812,19 +2351,21 @@ async def handle_google_forms(
         elif status == 404:
 
             message = (
-                "❌ Форма не найдена.\n\n"
+                "❌ <b>Форма не найдена.</b>\n\n"
                 "Проверьте ссылку."
             )
 
         else:
 
             message = (
-                "❌ Google Forms API вернул ошибку.\n"
+                "❌ Google Forms API "
+                "вернул ошибку.\n\n"
                 "Попробуйте ещё раз."
             )
 
         await processing_message.edit_text(
-            message
+            message,
+            parse_mode="HTML"
         )
 
     except RuntimeError as e:
@@ -1840,16 +2381,6 @@ async def handle_google_forms(
             parse_mode="HTML"
         )
 
-    except requests.RequestException as e:
-
-        print(
-            f"Google Forms request error: {e}"
-        )
-
-        await processing_message.edit_text(
-            "❌ Не удалось связаться с Google."
-        )
-
     except Exception as e:
 
         print(
@@ -1863,7 +2394,7 @@ async def handle_google_forms(
 
 
 # ============================================================
-# ОБРАБОТКА SKYSMART
+# SKYSMART
 # ============================================================
 
 async def handle_skysmart(
@@ -1882,7 +2413,7 @@ async def handle_skysmart(
             "❗ Отправьте ссылку "
             "на тест Skysmart.\n\n"
             "Пример:\n"
-            "https://edu.skysmart.ru/student/...",
+            "https://edu.skysmart.ru/student/..."
         )
 
         return
@@ -2002,9 +2533,9 @@ async def message_handler(
     if not text:
         return
 
-    # --------------------------------------------------------
+    # ========================================================
     # НЕ АВТОРИЗОВАН
-    # --------------------------------------------------------
+    # ========================================================
 
     if not is_authorized(
         user_id
@@ -2031,9 +2562,9 @@ async def message_handler(
 
         return
 
-    # --------------------------------------------------------
+    # ========================================================
     # SKYSMART
-    # --------------------------------------------------------
+    # ========================================================
 
     if text == "📚 Skysmart":
 
@@ -2052,9 +2583,9 @@ async def message_handler(
 
         return
 
-    # --------------------------------------------------------
+    # ========================================================
     # GOOGLE FORMS
-    # --------------------------------------------------------
+    # ========================================================
 
     if text == "📄 Google Forms":
 
@@ -2074,9 +2605,9 @@ async def message_handler(
 
         return
 
-    # --------------------------------------------------------
+    # ========================================================
     # ПОМОЩЬ
-    # --------------------------------------------------------
+    # ========================================================
 
     if text == "ℹ️ Помощь":
 
@@ -2086,17 +2617,17 @@ async def message_handler(
 
         return
 
-    # --------------------------------------------------------
+    # ========================================================
     # ТЕКУЩИЙ РЕЖИМ
-    # --------------------------------------------------------
+    # ========================================================
 
     mode = get_user_mode(
         user_id
     )
 
-    # --------------------------------------------------------
+    # ========================================================
     # GOOGLE FORMS
-    # --------------------------------------------------------
+    # ========================================================
 
     if mode == "google_forms":
 
@@ -2108,9 +2639,9 @@ async def message_handler(
 
         return
 
-    # --------------------------------------------------------
+    # ========================================================
     # SKYSMART
-    # --------------------------------------------------------
+    # ========================================================
 
     await handle_skysmart(
         update,
