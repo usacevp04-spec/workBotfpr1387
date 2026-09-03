@@ -12,7 +12,11 @@ from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import PlainTextResponse
 
-from telegram import Update
+from telegram import (
+    Update,
+    ReplyKeyboardMarkup,
+)
+
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -89,6 +93,36 @@ application = (
 
 
 # ============================================================
+# МЕНЮ
+# ============================================================
+
+MAIN_KEYBOARD = ReplyKeyboardMarkup(
+    [
+        ["📚 Skysmart", "📄 Google Forms"],
+        ["ℹ️ Помощь"],
+    ],
+    resize_keyboard=True,
+)
+
+
+# ============================================================
+# РЕЖИМЫ ПОЛЬЗОВАТЕЛЕЙ
+# ============================================================
+
+# Пока храним режимы в памяти.
+# Позже при необходимости перенесём в Supabase.
+user_modes = {}
+
+
+def get_user_mode(user_id: int) -> str:
+    return user_modes.get(user_id, "skysmart")
+
+
+def set_user_mode(user_id: int, mode: str):
+    user_modes[user_id] = mode
+
+
+# ============================================================
 # ПАРОЛИ
 # ============================================================
 
@@ -127,6 +161,7 @@ def initialize_passwords():
     """
 
     try:
+
         result = (
             supabase
             .table("bot_passwords")
@@ -143,7 +178,6 @@ def initialize_passwords():
 
             password_hash = hash_password(password)
 
-            # Защита от случайного совпадения
             existing = (
                 supabase
                 .table("bot_passwords")
@@ -178,6 +212,7 @@ def initialize_passwords():
 def is_authorized(user_id: int) -> bool:
 
     try:
+
         result = (
             supabase
             .table("bot_users")
@@ -250,7 +285,6 @@ def use_password(
 
         password_row = result.data[0]
 
-        # Используем пароль
         supabase.table("bot_passwords").update({
             "used": True,
             "used_by": user_id,
@@ -259,7 +293,6 @@ def use_password(
             password_row["id"]
         ).execute()
 
-        # Авторизуем пользователя
         supabase.table("bot_users").update({
             "authorized": True,
         }).eq(
@@ -288,6 +321,9 @@ async def start_command(
     if not update.effective_user:
         return
 
+    if not update.message:
+        return
+
     user_id = update.effective_user.id
 
     create_user_if_needed(user_id)
@@ -295,8 +331,10 @@ async def start_command(
     if is_authorized(user_id):
 
         await update.message.reply_text(
-            "✅ Вы уже авторизованы.\n\n"
-            "Отправьте ссылку на тест Skysmart."
+            "🤖 <b>Добро пожаловать!</b>\n\n"
+            "Выберите режим на клавиатуре ниже:",
+            parse_mode="HTML",
+            reply_markup=MAIN_KEYBOARD
         )
 
         return
@@ -319,6 +357,9 @@ async def id_command(
     if not update.effective_user:
         return
 
+    if not update.message:
+        return
+
     await update.message.reply_text(
         f"Ваш Telegram ID:\n"
         f"`{update.effective_user.id}`",
@@ -336,6 +377,9 @@ async def keys_command(
 ):
 
     if not update.effective_user:
+        return
+
+    if not update.message:
         return
 
     user_id = update.effective_user.id
@@ -400,7 +444,6 @@ def latex_to_readable(text: str) -> str:
     if not text:
         return text
 
-    # HTML entities
     text = (
         text
         .replace("&gt;", ">")
@@ -410,7 +453,6 @@ def latex_to_readable(text: str) -> str:
         .replace("&amp;", "&")
     )
 
-    # Backslash-варианты
     text = re.sub(
         r"\\\s*gt\b",
         ">",
@@ -446,7 +488,6 @@ def latex_to_readable(text: str) -> str:
         flags=re.IGNORECASE
     )
 
-    # Plain-варианты
     text = re.sub(
         r"\bgt\b",
         ">",
@@ -482,7 +523,6 @@ def latex_to_readable(text: str) -> str:
         flags=re.IGNORECASE
     )
 
-    # Дроби
     def replace_frac(match):
 
         numerator = match.group(1)
@@ -498,7 +538,6 @@ def latex_to_readable(text: str) -> str:
         text
     )
 
-    # Корень
     def replace_sqrt(match):
 
         content = match.group(1)
@@ -511,7 +550,6 @@ def latex_to_readable(text: str) -> str:
         text
     )
 
-    # Степени
     superscript_map = str.maketrans(
         "0123456789+-=()nix",
         "⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻⁼⁽⁾ⁿⁱˣ"
@@ -537,7 +575,6 @@ def latex_to_readable(text: str) -> str:
         text
     )
 
-    # Символы
     replacements = {
         r"\mathbb{R}": "ℝ",
         r"\mathbb R": "ℝ",
@@ -582,53 +619,45 @@ def latex_to_readable(text: str) -> str:
     for old, new in replacements.items():
         text = text.replace(old, new)
 
-    # Убираем визуальные LaTeX-команды
     text = re.sub(
         r"\\(?:Bigg|bigg|Big|big|left|right|middle)\b",
         "",
         text
     )
 
-    # Убираем spacing-команды
     text = re.sub(
         r"\\[,;:!]\s*",
         "",
         text
     )
 
-    # \text{...}
     text = re.sub(
         r"\\text\s*\{([^{}]*)\}",
         r"\1",
         text
     )
 
-    # \mathrm{...}
     text = re.sub(
         r"\\mathrm\s*\{([^{}]*)\}",
         r"\1",
         text
     )
 
-    # \operatorname{...}
     text = re.sub(
         r"\\operatorname\s*\{([^{}]*)\}",
         r"\1",
         text
     )
 
-    # Оставшиеся команды
     text = re.sub(
         r"\\[a-zA-Z]+\b",
         "",
         text
     )
 
-    # Убираем лишние фигурные скобки
     text = text.replace("{", "")
     text = text.replace("}", "")
 
-    # Убираем обратный слеш перед настоящими символами
     text = re.sub(
         r"\\\s*(>)",
         r"\1",
@@ -659,7 +688,6 @@ def latex_to_readable(text: str) -> str:
         text
     )
 
-    # Пробелы
     text = re.sub(
         r"[ \t]+",
         " ",
@@ -711,7 +739,6 @@ def extract_room_name(text: str):
 
     room = match.group(1)
 
-    # На случай ссылки с лишними символами
     room = room.rstrip(".,!?)]}>")
 
     return room
@@ -830,10 +857,6 @@ def get_task_answer(task):
 
 def format_skysmart(data):
 
-    """
-    Основной формат результата.
-    """
-
     if not isinstance(data, list):
         return "❌ Неожиданный ответ от сервера."
 
@@ -949,56 +972,64 @@ async def send_long_message(
 
 
 # ============================================================
-# ОБРАБОТКА СООБЩЕНИЙ
+# GOOGLE FORMS URL
 # ============================================================
 
-async def message_handler(
+def is_google_forms_url(text: str) -> bool:
+
+    pattern = (
+        r"https?://docs\.google\.com/forms/"
+    )
+
+    return bool(
+        re.search(
+            pattern,
+            text,
+            flags=re.IGNORECASE
+        )
+    )
+
+
+# ============================================================
+# ОБРАБОТКА GOOGLE FORMS
+# ============================================================
+
+async def handle_google_forms(
     update: Update,
-    context: ContextTypes.DEFAULT_TYPE
+    context: ContextTypes.DEFAULT_TYPE,
+    text: str
 ):
 
-    if not update.effective_user:
-        return
+    if not is_google_forms_url(text):
 
-    if not update.message:
-        return
-
-    user_id = update.effective_user.id
-
-    create_user_if_needed(user_id)
-
-    text = update.message.text or ""
-
-    text = text.strip()
-
-    if not text:
-        return
-
-    # --------------------------------------------------------
-    # Если пользователь ещё не авторизован
-    # --------------------------------------------------------
-
-    if not is_authorized(user_id):
-
-        if use_password(text, user_id):
-
-            await update.message.reply_text(
-                "✅ Пароль принят!\n\n"
-                "Авторизация успешна.\n\n"
-                "Теперь отправьте ссылку на тест Skysmart."
-            )
-
-        else:
-
-            await update.message.reply_text(
-                "❌ Неверный или уже использованный пароль."
-            )
+        await update.message.reply_text(
+            "❗ Отправьте ссылку на Google Form.\n\n"
+            "Пример:\n"
+            "https://docs.google.com/forms/..."
+        )
 
         return
 
-    # --------------------------------------------------------
-    # Проверяем ссылку Skysmart
-    # --------------------------------------------------------
+    await update.message.reply_text(
+        "📄 <b>Google Forms</b>\n\n"
+        "✅ Ссылка получена.\n\n"
+        "🚧 Режим получения заданий пока находится "
+        "на этапе разработки.\n\n"
+        "Следующим шагом мы добавим извлечение "
+        "вопросов из формы.",
+        parse_mode="HTML"
+    )
+
+
+# ============================================================
+# ОБРАБОТКА SKYSMART
+# ============================================================
+
+async def handle_skysmart(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    text: str
+):
 
     room_name = extract_room_name(text)
 
@@ -1012,18 +1043,12 @@ async def message_handler(
 
         return
 
-    # --------------------------------------------------------
-    # Получаем ответы
-    # --------------------------------------------------------
-
     processing_message = await update.message.reply_text(
         "⏳ Получаю задания и ответы..."
     )
 
     try:
 
-        # requests блокирует event loop,
-        # поэтому выполняем запрос в отдельном потоке
         data = await asyncio.to_thread(
             get_skysmart_answers,
             room_name
@@ -1061,6 +1086,162 @@ async def message_handler(
         await processing_message.edit_text(
             "❌ Произошла ошибка при обработке теста."
         )
+
+
+# ============================================================
+# ПОМОЩЬ
+# ============================================================
+
+async def show_help(
+    update: Update
+):
+
+    await update.message.reply_text(
+        "ℹ️ <b>Как пользоваться ботом</b>\n\n"
+
+        "📚 <b>Skysmart</b>\n"
+        "Выберите этот режим и отправьте ссылку "
+        "на тест Skysmart.\n\n"
+
+        "📄 <b>Google Forms</b>\n"
+        "Выберите этот режим и отправьте ссылку "
+        "на Google Form.\n\n"
+
+        "🤖 Бот обработает ссылку в соответствии "
+        "с выбранным режимом.",
+        parse_mode="HTML",
+        reply_markup=MAIN_KEYBOARD
+    )
+
+
+# ============================================================
+# ОБРАБОТКА СООБЩЕНИЙ
+# ============================================================
+
+async def message_handler(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    if not update.effective_user:
+        return
+
+    if not update.message:
+        return
+
+    user_id = update.effective_user.id
+
+    create_user_if_needed(user_id)
+
+    text = update.message.text or ""
+
+    text = text.strip()
+
+    if not text:
+        return
+
+    # --------------------------------------------------------
+    # Если пользователь ещё не авторизован
+    # --------------------------------------------------------
+
+    if not is_authorized(user_id):
+
+        if use_password(text, user_id):
+
+            await update.message.reply_text(
+                "✅ Пароль принят!\n\n"
+                "🤖 Авторизация успешна.\n\n"
+                "Выберите режим:",
+                reply_markup=MAIN_KEYBOARD
+            )
+
+        else:
+
+            await update.message.reply_text(
+                "❌ Неверный или уже использованный пароль."
+            )
+
+        return
+
+    # --------------------------------------------------------
+    # МЕНЮ: SKYSMART
+    # --------------------------------------------------------
+
+    if text == "📚 Skysmart":
+
+        set_user_mode(
+            user_id,
+            "skysmart"
+        )
+
+        await update.message.reply_text(
+            "📚 <b>Режим Skysmart выбран.</b>\n\n"
+            "Теперь отправьте ссылку на тест Skysmart.",
+            parse_mode="HTML",
+            reply_markup=MAIN_KEYBOARD
+        )
+
+        return
+
+    # --------------------------------------------------------
+    # МЕНЮ: GOOGLE FORMS
+    # --------------------------------------------------------
+
+    if text == "📄 Google Forms":
+
+        set_user_mode(
+            user_id,
+            "google_forms"
+        )
+
+        await update.message.reply_text(
+            "📄 <b>Режим Google Forms выбран.</b>\n\n"
+            "Отправьте ссылку на Google Form.",
+            parse_mode="HTML",
+            reply_markup=MAIN_KEYBOARD
+        )
+
+        return
+
+    # --------------------------------------------------------
+    # МЕНЮ: ПОМОЩЬ
+    # --------------------------------------------------------
+
+    if text == "ℹ️ Помощь":
+
+        await show_help(update)
+
+        return
+
+    # --------------------------------------------------------
+    # ТЕКУЩИЙ РЕЖИМ
+    # --------------------------------------------------------
+
+    mode = get_user_mode(user_id)
+
+    # --------------------------------------------------------
+    # GOOGLE FORMS
+    # --------------------------------------------------------
+
+    if mode == "google_forms":
+
+        await handle_google_forms(
+            update,
+            context,
+            text
+        )
+
+        return
+
+    # --------------------------------------------------------
+    # SKYSMART
+    # --------------------------------------------------------
+
+    await handle_skysmart(
+        update,
+        context,
+        text
+    )
 
 
 # ============================================================
@@ -1234,7 +1415,9 @@ app = Starlette(
 
 from starlette.routing import Route
 
+
 app.router.routes.extend([
+
     Route(
         "/",
         homepage,
@@ -1252,6 +1435,7 @@ app.router.routes.extend([
         telegram_webhook,
         methods=["POST"]
     ),
+
 ])
 
 
