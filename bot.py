@@ -75,13 +75,30 @@ MAX_MESSAGE_LENGTH = 3900
 # GOOGLE
 # ============================================================
 
+# Нужны оба доступа:
+#
+# forms.body.readonly
+# -> чтение содержимого формы
+#
+# drive.readonly
+# -> поиск Google Form в Google Drive,
+#    когда пользователь прислал /d/e/.../viewform
+#
 GOOGLE_FORMS_SCOPE = (
     "https://www.googleapis.com/auth/forms.body.readonly"
 )
 
+GOOGLE_DRIVE_SCOPE = (
+    "https://www.googleapis.com/auth/drive.readonly"
+)
+
+GOOGLE_SCOPES = [
+    GOOGLE_FORMS_SCOPE,
+    GOOGLE_DRIVE_SCOPE,
+]
+
 GOOGLE_TOKEN_ACCOUNT = "main"
 
-# OAuth state живёт максимум 15 минут
 GOOGLE_OAUTH_STATE_TTL = 15 * 60
 
 
@@ -90,49 +107,31 @@ GOOGLE_OAUTH_STATE_TTL = 15 * 60
 # ============================================================
 
 if not BOT_TOKEN:
-    raise RuntimeError(
-        "Не задан BOT_TOKEN"
-    )
+    raise RuntimeError("Не задан BOT_TOKEN")
 
 if not RENDER_URL:
-    raise RuntimeError(
-        "Не задан RENDER_URL"
-    )
+    raise RuntimeError("Не задан RENDER_URL")
 
 if not SUPABASE_URL:
-    raise RuntimeError(
-        "Не задан SUPABASE_URL"
-    )
+    raise RuntimeError("Не задан SUPABASE_URL")
 
 if not SUPABASE_SERVICE_KEY:
-    raise RuntimeError(
-        "Не задан SUPABASE_SERVICE_KEY"
-    )
+    raise RuntimeError("Не задан SUPABASE_SERVICE_KEY")
 
 if not OWNER_ID:
-    raise RuntimeError(
-        "Не задан OWNER_ID"
-    )
+    raise RuntimeError("Не задан OWNER_ID")
 
 if not GOOGLE_CLIENT_ID:
-    raise RuntimeError(
-        "Не задан GOOGLE_CLIENT_ID"
-    )
+    raise RuntimeError("Не задан GOOGLE_CLIENT_ID")
 
 if not GOOGLE_CLIENT_SECRET:
-    raise RuntimeError(
-        "Не задан GOOGLE_CLIENT_SECRET"
-    )
+    raise RuntimeError("Не задан GOOGLE_CLIENT_SECRET")
 
 if not GOOGLE_REDIRECT_URI:
-    raise RuntimeError(
-        "Не задан GOOGLE_REDIRECT_URI"
-    )
+    raise RuntimeError("Не задан GOOGLE_REDIRECT_URI")
 
 
-OWNER_ID = int(
-    OWNER_ID
-)
+OWNER_ID = int(OWNER_ID)
 
 
 # ============================================================
@@ -176,15 +175,13 @@ MAIN_KEYBOARD = ReplyKeyboardMarkup(
 
 
 # ============================================================
-# РЕЖИМЫ ПОЛЬЗОВАТЕЛЕЙ
+# РЕЖИМЫ
 # ============================================================
 
 user_modes = {}
 
 
-def get_user_mode(
-    user_id: int
-) -> str:
+def get_user_mode(user_id: int) -> str:
 
     return user_modes.get(
         user_id,
@@ -204,9 +201,7 @@ def set_user_mode(
 # ПАРОЛИ
 # ============================================================
 
-def hash_password(
-    password: str
-) -> str:
+def hash_password(password: str) -> str:
 
     return hashlib.sha256(
         password.encode("utf-8")
@@ -240,10 +235,7 @@ def initialize_passwords():
             supabase
             .table("bot_passwords")
             .select("id")
-            .eq(
-                "used",
-                False
-            )
+            .eq("used", False)
             .execute()
         )
 
@@ -303,9 +295,7 @@ def initialize_passwords():
 # ПОЛЬЗОВАТЕЛИ
 # ============================================================
 
-def is_authorized(
-    user_id: int
-) -> bool:
+def is_authorized(user_id: int) -> bool:
 
     try:
 
@@ -339,9 +329,7 @@ def is_authorized(
         return False
 
 
-def create_user_if_needed(
-    user_id: int
-):
+def create_user_if_needed(user_id: int):
 
     try:
 
@@ -475,15 +463,11 @@ def get_google_client_config():
     }
 
 
-def create_google_flow(
-    state=None
-):
+def create_google_flow(state=None):
 
     flow = Flow.from_client_config(
         get_google_client_config(),
-        scopes=[
-            GOOGLE_FORMS_SCOPE
-        ],
+        scopes=GOOGLE_SCOPES,
         redirect_uri=GOOGLE_REDIRECT_URI,
     )
 
@@ -504,7 +488,6 @@ def save_google_oauth_state(
 
     try:
 
-        # На всякий случай удаляем старые состояния
         cleanup_google_oauth_states()
 
         (
@@ -535,9 +518,7 @@ def save_google_oauth_state(
         return False
 
 
-def get_google_oauth_state(
-    state: str
-):
+def get_google_oauth_state(state: str):
 
     try:
 
@@ -574,7 +555,6 @@ def get_google_oauth_state(
                 )
 
                 if created_dt.tzinfo is None:
-
                     created_dt = created_dt.replace(
                         tzinfo=timezone.utc
                     )
@@ -590,10 +570,6 @@ def get_google_oauth_state(
                         state
                     )
 
-                    print(
-                        "OAuth state истёк."
-                    )
-
                     return None
 
                 if age < -60:
@@ -602,17 +578,12 @@ def get_google_oauth_state(
                         state
                     )
 
-                    print(
-                        "OAuth state имеет "
-                        "некорректное время."
-                    )
-
                     return None
 
             except Exception as e:
 
                 print(
-                    f"Ошибка проверки времени OAuth state: {e}"
+                    f"Ошибка проверки OAuth state: {e}"
                 )
 
         return row
@@ -687,7 +658,6 @@ def cleanup_google_oauth_states():
                 )
 
                 if created_dt.tzinfo is None:
-
                     created_dt = created_dt.replace(
                         tzinfo=timezone.utc
                     )
@@ -761,9 +731,7 @@ def get_saved_google_credentials():
             Credentials
             .from_authorized_user_info(
                 token_data,
-                scopes=[
-                    GOOGLE_FORMS_SCOPE
-                ]
+                scopes=GOOGLE_SCOPES
             )
         )
 
@@ -808,9 +776,7 @@ def save_google_credentials(
             (
                 supabase
                 .table("google_tokens")
-                .update(
-                    payload
-                )
+                .update(payload)
                 .eq(
                     "account_name",
                     GOOGLE_TOKEN_ACCOUNT
@@ -823,9 +789,7 @@ def save_google_credentials(
             (
                 supabase
                 .table("google_tokens")
-                .insert(
-                    payload
-                )
+                .insert(payload)
                 .execute()
             )
 
@@ -842,22 +806,13 @@ def save_google_credentials(
         raise
 
 
-def get_google_service():
-
-    credentials = (
-        get_saved_google_credentials()
-    )
-
-    if not credentials:
-
-        return None
-
-    # ========================================================
-    # ОБНОВЛЕНИЕ ACCESS TOKEN
-    # ========================================================
+def refresh_google_credentials(
+    credentials
+):
 
     if (
-        credentials.refresh_token
+        credentials
+        and credentials.refresh_token
         and not credentials.valid
     ):
 
@@ -883,24 +838,33 @@ def get_google_service():
 
             return None
 
-    if not credentials.valid:
+    if not credentials or not credentials.valid:
+        return None
 
-        print(
-            "Google credentials недействительны."
-        )
+    return credentials
 
+
+def get_google_service():
+
+    credentials = (
+        get_saved_google_credentials()
+    )
+
+    credentials = refresh_google_credentials(
+        credentials
+    )
+
+    if not credentials:
         return None
 
     try:
 
-        service = build(
+        return build(
             "forms",
             "v1",
             credentials=credentials,
             cache_discovery=False
         )
-
-        return service
 
     except Exception as e:
 
@@ -911,24 +875,49 @@ def get_google_service():
         return None
 
 
+def get_google_drive_service():
+
+    credentials = (
+        get_saved_google_credentials()
+    )
+
+    credentials = refresh_google_credentials(
+        credentials
+    )
+
+    if not credentials:
+        return None
+
+    try:
+
+        return build(
+            "drive",
+            "v3",
+            credentials=credentials,
+            cache_discovery=False
+        )
+
+    except Exception as e:
+
+        print(
+            f"Ошибка создания Google Drive service: {e}"
+        )
+
+        return None
+
+
 # ============================================================
 # GOOGLE FORM URL
 # ============================================================
 
-def extract_google_form_id(
-    text: str
-):
+def extract_google_form_id(text: str):
 
     if not text:
         return None
 
-    # ========================================================
-    # СНАЧАЛА /d/e/...
-    #
-    # ВАЖНО:
-    # Этот regex должен идти ПЕРЕД /d/...
-    # иначе "e" будет воспринято как form ID.
-    # ========================================================
+    # --------------------------------------------------------
+    # /d/e/PUBLIC_ID/viewform
+    # --------------------------------------------------------
 
     match = re.search(
         r"https?://docs\.google\.com/forms/d/e/"
@@ -946,13 +935,10 @@ def extract_google_form_id(
             "url": match.group(0)
         }
 
-    # ========================================================
-    # ОБЫЧНАЯ ССЫЛКА /d/FORM_ID/...
-    #
-    # Например:
-    # /forms/d/1AbCdEf/edit
-    # /forms/d/1AbCdEf/viewform
-    # ========================================================
+    # --------------------------------------------------------
+    # /d/FORM_ID/edit
+    # /d/FORM_ID/viewform
+    # --------------------------------------------------------
 
     match = re.search(
         r"https?://docs\.google\.com/forms/d/"
@@ -975,228 +961,185 @@ def extract_google_form_id(
 
 
 # ============================================================
-# ПОЛУЧЕНИЕ НАСТОЯЩЕГО FORM ID
-# ИЗ /d/e/.../viewform
+# GOOGLE FORM ID ИЗ PUBLIC /d/e/... ССЫЛКИ
 # ============================================================
 
 def resolve_published_google_form_id(
     published_url: str
 ):
 
-    credentials = (
-        get_saved_google_credentials()
+    drive_service = (
+        get_google_drive_service()
     )
 
-    if not credentials:
+    forms_service = (
+        get_google_service()
+    )
+
+    if not drive_service or not forms_service:
 
         raise RuntimeError(
             "Google аккаунт ещё не подключён."
         )
 
-    # ========================================================
-    # ОБНОВЛЯЕМ TOKEN
-    # ========================================================
+    match = re.search(
+        r"/forms/d/e/"
+        r"([a-zA-Z0-9_-]+)"
+        r"/",
+        published_url,
+        flags=re.IGNORECASE
+    )
 
-    if (
-        credentials.refresh_token
-        and not credentials.valid
-    ):
-
-        try:
-
-            from google.auth.transport.requests import (
-                Request as GoogleRequest
-            )
-
-            credentials.refresh(
-                GoogleRequest()
-            )
-
-            save_google_credentials(
-                credentials
-            )
-
-        except Exception as e:
-
-            print(
-                f"Ошибка обновления Google token "
-                f"при определении form ID: {e}"
-            )
-
-            raise RuntimeError(
-                "Не удалось обновить Google авторизацию."
-            )
-
-    if not credentials.token:
+    if not match:
 
         raise RuntimeError(
-            "Google access token отсутствует."
+            "Некорректная публичная ссылка Google Form."
         )
 
-    # ========================================================
-    # ЗАПРАШИВАЕМ СТРАНИЦУ ФОРМЫ
-    # ========================================================
+    public_id = match.group(1)
+
+    print(
+        f"Ищем Google Form по public ID: {public_id}"
+    )
+
+    # --------------------------------------------------------
+    # Получаем список Google Forms из Drive
+    # --------------------------------------------------------
 
     try:
 
-        response = requests.get(
-            published_url,
-            headers={
-                "Authorization":
-                    f"Bearer {credentials.token}",
-                "User-Agent":
-                    "Mozilla/5.0"
-            },
-            timeout=20,
-            allow_redirects=True
+        response = (
+            drive_service
+            .files()
+            .list(
+                q=(
+                    "mimeType = "
+                    "'application/vnd.google-apps.form' "
+                    "and trashed = false"
+                ),
+                spaces="drive",
+                fields=(
+                    "files(id,name,webViewLink)"
+                ),
+                pageSize=1000
+            )
+            .execute()
         )
 
-        response.raise_for_status()
-
-        page = response.text
-
-    except requests.RequestException as e:
+    except HttpError as e:
 
         print(
-            f"Ошибка загрузки опубликованной Google Form: {e}"
+            f"Google Drive API error: {e}"
         )
 
         raise RuntimeError(
-            "Не удалось открыть опубликованную "
-            "Google Form."
+            "Не удалось получить список Google Forms "
+            "из Google Drive."
         )
 
-    # ========================================================
-    # ВАРИАНТ 1
-    # formId в JSON/JavaScript страницы
-    # ========================================================
-
-    patterns = [
-
-        r'"formId"\s*:\s*"([a-zA-Z0-9_-]+)"',
-
-        r"'formId'\s*:\s*'([a-zA-Z0-9_-]+)'",
-
-        r'formId\s*=\s*"([a-zA-Z0-9_-]+)"',
-
-        r"formId\s*=\s*'([a-zA-Z0-9_-]+)'",
-
-        r'"FORM_ID"\s*:\s*"([a-zA-Z0-9_-]+)"',
-
-        r'"form_id"\s*:\s*"([a-zA-Z0-9_-]+)"',
-
-    ]
-
-    for pattern in patterns:
-
-        match = re.search(
-            pattern,
-            page
-        )
-
-        if match:
-
-            form_id = match.group(1)
-
-            if (
-                form_id
-                and form_id.lower() != "e"
-                and form_id != match.group(1)
-            ):
-                continue
-
-            if form_id.lower() != "e":
-
-                print(
-                    f"Найден настоящий Google Form ID: "
-                    f"{form_id}"
-                )
-
-                return form_id
-
-    # ========================================================
-    # ВАРИАНТ 2
-    # Ищем edit URL внутри HTML
-    # ========================================================
-
-    edit_patterns = [
-
-        r"https?://docs\.google\.com/forms/d/"
-        r"([a-zA-Z0-9_-]+)/edit",
-
-        r"https:\\/\\/docs\.google\.com\\/forms\\/d\\/"
-        r"([a-zA-Z0-9_-]+)\\/edit",
-
-        r"/forms/d/"
-        r"([a-zA-Z0-9_-]+)/edit",
-
-    ]
-
-    for pattern in edit_patterns:
-
-        match = re.search(
-            pattern,
-            page,
-            flags=re.IGNORECASE
-        )
-
-        if match:
-
-            form_id = match.group(1)
-
-            if form_id.lower() != "e":
-
-                print(
-                    f"Найден Google Form ID через edit URL: "
-                    f"{form_id}"
-                )
-
-                return form_id
-
-    # ========================================================
-    # ВАРИАНТ 3
-    # Иногда ID встречается в canonical URL
-    # ========================================================
-
-    canonical_patterns = [
-
-        r'<link[^>]+rel=["\']canonical["\'][^>]+'
-        r'href=["\']https?://docs\.google\.com/forms/d/'
-        r'([a-zA-Z0-9_-]+)',
-
-        r'<meta[^>]+content=["\']https?://docs\.google\.com/forms/d/'
-        r'([a-zA-Z0-9_-]+)',
-
-    ]
-
-    for pattern in canonical_patterns:
-
-        match = re.search(
-            pattern,
-            page,
-            flags=re.IGNORECASE
-        )
-
-        if match:
-
-            form_id = match.group(1)
-
-            if form_id.lower() != "e":
-
-                print(
-                    f"Найден Google Form ID "
-                    f"через canonical URL: {form_id}"
-                )
-
-                return form_id
-
-    # ========================================================
-    # НЕ НАШЛИ
-    # ========================================================
+    files = response.get(
+        "files",
+        []
+    )
 
     print(
-        "Настоящий Form ID не найден "
-        "в опубликованной странице."
+        f"Google Drive вернул форм: {len(files)}"
+    )
+
+    # --------------------------------------------------------
+    # Проверяем каждую форму через Forms API
+    #
+    # У формы есть responderUri.
+    # Сравниваем его с public URL.
+    # --------------------------------------------------------
+
+    for file in files:
+
+        form_id = file.get(
+            "id"
+        )
+
+        if not form_id:
+            continue
+
+        try:
+
+            form_data = (
+                forms_service
+                .forms()
+                .get(
+                    formId=form_id
+                )
+                .execute()
+            )
+
+        except HttpError as e:
+
+            status = getattr(
+                e.resp,
+                "status",
+                None
+            )
+
+            # Например, форма может быть недоступна
+            # приложению.
+            if status in (403, 404):
+                continue
+
+            print(
+                f"Ошибка проверки формы "
+                f"{form_id}: {e}"
+            )
+
+            continue
+
+        responder_uri = (
+            form_data
+            .get("responderUri")
+            or ""
+        )
+
+        print(
+            f"Проверяем форму "
+            f"{form_id}: {responder_uri}"
+        )
+
+        # ----------------------------------------------------
+        # Самый надёжный вариант:
+        # public ID должен присутствовать в responderUri.
+        # ----------------------------------------------------
+
+        if public_id in responder_uri:
+
+            print(
+                "НАЙДЕН НАСТОЯЩИЙ FORM ID: "
+                f"{form_id}"
+            )
+
+            return form_id
+
+        # ----------------------------------------------------
+        # Дополнительная проверка:
+        # иногда URL может быть представлен
+        # в другом виде.
+        # ----------------------------------------------------
+
+        if (
+            responder_uri
+            and published_url.rstrip("/")
+            == responder_uri.rstrip("/")
+        ):
+
+            print(
+                "Форма найдена по полному responderUri: "
+                f"{form_id}"
+            )
+
+            return form_id
+
+    print(
+        "Не удалось сопоставить public ID "
+        "с Google Form."
     )
 
     return None
@@ -1232,8 +1175,9 @@ def get_google_form(
             if not form_id:
 
                 raise RuntimeError(
-                    "Не удалось определить настоящий "
-                    "ID опубликованной формы."
+                    "Не удалось найти эту опубликованную "
+                    "форму в Google Drive подключённого "
+                    "аккаунта."
                 )
 
     else:
@@ -1365,9 +1309,9 @@ def format_google_form(
             {}
         )
 
-        # ====================================================
-        # ВАРИАНТЫ ОТВЕТА
-        # ====================================================
+        # ----------------------------------------------------
+        # ВАРИАНТЫ
+        # ----------------------------------------------------
 
         choice_question = question.get(
             "choiceQuestion"
@@ -1402,9 +1346,9 @@ def format_google_form(
                         )
                     )
 
-        # ====================================================
-        # ТЕКСТОВОЕ ПОЛЕ
-        # ====================================================
+        # ----------------------------------------------------
+        # ТЕКСТ
+        # ----------------------------------------------------
 
         text_question = question.get(
             "textQuestion"
@@ -1417,9 +1361,9 @@ def format_google_form(
                 "<i>Поле для ввода ответа</i>"
             )
 
-        # ====================================================
+        # ----------------------------------------------------
         # ШКАЛА
-        # ====================================================
+        # ----------------------------------------------------
 
         scale_question = question.get(
             "scaleQuestion"
@@ -1514,10 +1458,6 @@ async def google_command(
 
     user_id = update.effective_user.id
 
-    # --------------------------------------------------------
-    # ПРОВЕРКА АВТОРИЗАЦИИ БОТА
-    # --------------------------------------------------------
-
     if not is_authorized(
         user_id
     ):
@@ -1528,10 +1468,6 @@ async def google_command(
 
         return
 
-    # --------------------------------------------------------
-    # GOOGLE МОЖЕТ ПОДКЛЮЧАТЬ ТОЛЬКО OWNER
-    # --------------------------------------------------------
-
     if user_id != OWNER_ID:
 
         await update.message.reply_text(
@@ -1541,15 +1477,7 @@ async def google_command(
 
         return
 
-    # --------------------------------------------------------
-    # ОЧИЩАЕМ СТАРЫЕ OAUTH STATE
-    # --------------------------------------------------------
-
     cleanup_google_oauth_states()
-
-    # --------------------------------------------------------
-    # СОЗДАЁМ STATE
-    # --------------------------------------------------------
 
     state = secrets.token_urlsafe(
         32
@@ -1568,10 +1496,6 @@ async def google_command(
 
         return
 
-    # --------------------------------------------------------
-    # СОЗДАЁМ GOOGLE FLOW
-    # --------------------------------------------------------
-
     flow = create_google_flow(
         state=state
     )
@@ -1583,10 +1507,6 @@ async def google_command(
             include_granted_scopes="true"
         )
     )
-
-    # --------------------------------------------------------
-    # ЕСЛИ GOOGLE FLOW ВЕРНУЛ ДРУГОЙ STATE
-    # --------------------------------------------------------
 
     if returned_state != state:
 
@@ -1647,19 +1567,10 @@ async def google_callback(
                 <meta charset="utf-8">
                 <title>Google OAuth</title>
             </head>
-
             <body>
-
             <h2>❌ Google авторизация отменена</h2>
-
-            <p>
-            {html.escape(error)}
-            </p>
-
-            <p>
-            Можно закрыть эту страницу.
-            </p>
-
+            <p>{html.escape(error)}</p>
+            <p>Можно закрыть эту страницу.</p>
             </body>
             </html>
             """,
@@ -1682,24 +1593,16 @@ async def google_callback(
             <head>
                 <meta charset="utf-8">
             </head>
-
             <body>
-
             <h2>❌ Неверный OAuth callback</h2>
-
             <p>
             Не хватает параметров state или code.
             </p>
-
             </body>
             </html>
             """,
             status_code=400
         )
-
-    # ========================================================
-    # ПРОВЕРЯЕМ STATE В SUPABASE
-    # ========================================================
 
     oauth_state = get_google_oauth_state(
         state
@@ -1714,30 +1617,21 @@ async def google_callback(
                 <meta charset="utf-8">
                 <title>OAuth ошибка</title>
             </head>
-
             <body>
-
             <h2>❌ OAuth-сессия недействительна</h2>
-
             <p>
             Эта OAuth-сессия уже истекла
             или не существует.
             </p>
-
             <p>
             Вернитесь в Telegram
             и запустите /google ещё раз.
             </p>
-
             </body>
             </html>
             """,
             status_code=400
         )
-
-    # ========================================================
-    # ПРОВЕРЯЕМ OWNER
-    # ========================================================
 
     try:
 
@@ -1761,9 +1655,7 @@ async def google_callback(
             """
             <html>
             <body>
-
             <h2>❌ Недействительная OAuth-сессия</h2>
-
             </body>
             </html>
             """,
@@ -1772,17 +1664,9 @@ async def google_callback(
 
     try:
 
-        # ====================================================
-        # СОЗДАЁМ FLOW
-        # ====================================================
-
         flow = create_google_flow(
             state=state
         )
-
-        # ====================================================
-        # ПОЛУЧАЕМ TOKEN
-        # ====================================================
 
         flow.fetch_token(
             authorization_response=str(
@@ -1791,10 +1675,6 @@ async def google_callback(
         )
 
         credentials = flow.credentials
-
-        # ====================================================
-        # ПРОВЕРЯЕМ REFRESH TOKEN
-        # ====================================================
 
         if not credentials.refresh_token:
 
@@ -1808,35 +1688,23 @@ async def google_callback(
                 <head>
                     <meta charset="utf-8">
                 </head>
-
                 <body>
-
                 <h2>
                 ❌ Google не выдал refresh token
                 </h2>
-
                 <p>
                 Вернитесь в Telegram
                 и запустите /google ещё раз.
                 </p>
-
                 </body>
                 </html>
                 """,
                 status_code=400
             )
 
-        # ====================================================
-        # СОХРАНЯЕМ TOKEN
-        # ====================================================
-
         save_google_credentials(
             credentials
         )
-
-        # ====================================================
-        # УДАЛЯЕМ STATE
-        # ====================================================
 
         delete_google_oauth_state(
             state
@@ -1853,21 +1721,16 @@ async def google_callback(
                 <meta charset="utf-8">
                 <title>Google подключён</title>
             </head>
-
             <body>
-
             <h2>✅ Google успешно подключён!</h2>
-
             <p>
             Аккаунт-пустышка успешно авторизован.
             </p>
-
             <p>
             Теперь можно закрыть эту страницу,
             вернуться в Telegram и выбрать
             «📄 Google Forms».
             </p>
-
             </body>
             </html>
             """
@@ -1888,21 +1751,17 @@ async def google_callback(
             <html>
             <head>
                 <meta charset="utf-8">
+                <title>Google OAuth</title>
             </head>
-
             <body>
-
             <h2>❌ Ошибка авторизации Google</h2>
-
             <p>
             Не удалось завершить авторизацию.
             </p>
-
             <p>
             Проверьте настройки Google Cloud
             и попробуйте снова через /google.
             </p>
-
             </body>
             </html>
             """,
@@ -2054,7 +1913,7 @@ async def keys_command(
 
 
 # ============================================================
-# LATEX → ЧИТАЕМЫЙ ВИД
+# LATEX
 # ============================================================
 
 def latex_to_readable(
@@ -2418,7 +2277,7 @@ def get_skysmart_answers(
 
 
 # ============================================================
-# ФОРМАТИРОВАНИЕ SKYSMART
+# SKYSMART FORMAT
 # ============================================================
 
 def get_task_number(
@@ -2460,7 +2319,6 @@ def get_task_question(
         return ""
 
     possible_keys = [
-
         "question",
         "question_text",
         "questionText",
@@ -2499,7 +2357,6 @@ def get_task_answer(
         return ""
 
     possible_keys = [
-
         "answer",
         "answers",
         "correct_answer",
@@ -2619,7 +2476,7 @@ def format_skysmart(
 
 
 # ============================================================
-# РАЗБИВКА ДЛИННОГО СООБЩЕНИЯ
+# РАЗБИВКА
 # ============================================================
 
 def split_message(
@@ -2628,11 +2485,9 @@ def split_message(
 ):
 
     if len(text) <= max_length:
-
         return [text]
 
     chunks = []
-
     current = ""
 
     blocks = text.split(
@@ -2680,7 +2535,6 @@ def split_message(
         else:
 
             if current:
-
                 chunks.append(
                     current
                 )
@@ -2688,7 +2542,6 @@ def split_message(
             current = block
 
     if current:
-
         chunks.append(
             current
         )
@@ -2733,8 +2586,10 @@ async def handle_google_forms(
         await update.message.reply_text(
             "❗ <b>Отправьте ссылку "
             "на Google Form.</b>\n\n"
-            "Например:\n"
-            "https://docs.google.com/forms/d/.../edit",
+            "Поддерживаются ссылки:\n"
+            "• /d/FORM_ID/edit\n"
+            "• /d/FORM_ID/viewform\n"
+            "• /d/e/.../viewform",
             parse_mode="HTML"
         )
 
@@ -2797,12 +2652,9 @@ async def handle_google_forms(
         elif status == 404:
 
             message = (
-                "❌ <b>Форма не найдена.</b>\n\n"
-                "Если вы отправили ссылку "
-                "вида /d/e/.../viewform, "
-                "попробуйте отправить ссылку "
-                "на редактирование:\n\n"
-                "<code>https://docs.google.com/forms/d/FORM_ID/edit</code>"
+                "❌ <b>Google Form не найдена.</b>\n\n"
+                "Проверьте ссылку и доступ "
+                "подключённого Google-аккаунта."
             )
 
         else:
@@ -2826,27 +2678,30 @@ async def handle_google_forms(
 
         error_text = str(e)
 
-        if (
-            "опубликованной" in error_text
-            or "ID опубликованной" in error_text
-        ):
-
-            message = (
-                "⚠️ <b>Не удалось определить "
-                "ID этой опубликованной формы.</b>\n\n"
-                "Попробуйте отправить ссылку "
-                "на редактирование формы:\n\n"
-                "<code>https://docs.google.com/forms/d/FORM_ID/edit</code>"
-            )
-
-        elif (
-            "Google аккаунт" in error_text
-            or "авторизацию" in error_text
-        ):
+        if "Google аккаунт" in error_text:
 
             message = (
                 "🔐 <b>Google ещё не подключён.</b>\n\n"
                 "Используйте команду /google."
+            )
+
+        elif "Google Drive" in error_text:
+
+            message = (
+                "❌ <b>Не удалось найти форму "
+                "в Google Drive.</b>\n\n"
+                "Убедитесь, что подключённый "
+                "Google-аккаунт имеет доступ "
+                "к этой форме."
+            )
+
+        elif "опубликованную" in error_text:
+
+            message = (
+                "⚠️ <b>Не удалось определить "
+                "форму по публичной ссылке.</b>\n\n"
+                "Попробуйте отправить ссылку "
+                "на редактирование формы."
             )
 
         else:
@@ -3025,9 +2880,9 @@ async def message_handler(
     if not text:
         return
 
-    # ========================================================
+    # --------------------------------------------------------
     # НЕ АВТОРИЗОВАН
-    # ========================================================
+    # --------------------------------------------------------
 
     if not is_authorized(
         user_id
@@ -3054,9 +2909,9 @@ async def message_handler(
 
         return
 
-    # ========================================================
+    # --------------------------------------------------------
     # SKYSMART
-    # ========================================================
+    # --------------------------------------------------------
 
     if text == "📚 Skysmart":
 
@@ -3075,9 +2930,9 @@ async def message_handler(
 
         return
 
-    # ========================================================
+    # --------------------------------------------------------
     # GOOGLE FORMS
-    # ========================================================
+    # --------------------------------------------------------
 
     if text == "📄 Google Forms":
 
@@ -3089,17 +2944,17 @@ async def message_handler(
         await update.message.reply_text(
             "📄 <b>Режим Google Forms выбран.</b>\n\n"
             "Отправьте ссылку на Google Form.\n\n"
-            "Если форма требует входа, "
-            "сначала выполните /google.",
+            "Поддерживается и публичная ссылка "
+            "вида /d/e/.../viewform.",
             parse_mode="HTML",
             reply_markup=MAIN_KEYBOARD
         )
 
         return
 
-    # ========================================================
+    # --------------------------------------------------------
     # ПОМОЩЬ
-    # ========================================================
+    # --------------------------------------------------------
 
     if text == "ℹ️ Помощь":
 
@@ -3109,17 +2964,13 @@ async def message_handler(
 
         return
 
-    # ========================================================
+    # --------------------------------------------------------
     # ТЕКУЩИЙ РЕЖИМ
-    # ========================================================
+    # --------------------------------------------------------
 
     mode = get_user_mode(
         user_id
     )
-
-    # ========================================================
-    # GOOGLE FORMS
-    # ========================================================
 
     if mode == "google_forms":
 
@@ -3130,10 +2981,6 @@ async def message_handler(
         )
 
         return
-
-    # ========================================================
-    # SKYSMART
-    # ========================================================
 
     await handle_skysmart(
         update,
