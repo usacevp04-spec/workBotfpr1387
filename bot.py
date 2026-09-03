@@ -2123,36 +2123,59 @@ async def shutdown():
     )
 
     try:
-
         await application.bot.delete_webhook()
-
     except Exception:
         pass
 
     try:
-
         await application.stop()
-
     except Exception:
         pass
 
     try:
-
         await application.shutdown()
-
     except Exception:
         pass
 
 
-app.add_event_handler(
-    startup,
-    "startup"
+# ============================================================
+# STARLETTE
+# ============================================================
+
+app = Starlette(
+    routes=[
+        Route(
+            "/",
+            home,
+            methods=["GET"]
+        ),
+        Route(
+            "/health",
+            health,
+            methods=["GET"]
+        ),
+        Route(
+            "/telegram",
+            telegram_webhook,
+            methods=["POST"]
+        )
+    ],
+    on_startup=[startup],
+    on_shutdown=[shutdown]
 )
 
-app.add_event_handler(
-    shutdown,
-    "shutdown"
-)
+
+# ============================================================
+# RUN
+# ============================================================
+
+if __name__ == "__main__":
+
+    uvicorn.run(
+        app,
+        host="0.0.0.0",
+        port=PORT
+    )
 
 
 # ============================================================
