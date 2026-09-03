@@ -5,7 +5,6 @@ import hashlib
 import secrets
 import asyncio
 import json
-from datetime import datetime, timezone
 
 import requests
 import uvicorn
@@ -17,8 +16,6 @@ from starlette.responses import PlainTextResponse, HTMLResponse
 from telegram import (
     Update,
     ReplyKeyboardMarkup,
-    InlineKeyboardButton,
-    InlineKeyboardMarkup,
 )
 
 from telegram.ext import (
@@ -30,11 +27,6 @@ from telegram.ext import (
 )
 
 from supabase import create_client
-
-from google_auth_oauthlib.flow import Flow
-from google.oauth2.credentials import Credentials
-from googleapiclient.discovery import build
-from googleapiclient.errors import HttpError
 
 
 # ============================================================
@@ -49,14 +41,6 @@ SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
 
 OWNER_ID = os.getenv("OWNER_ID")
 
-GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
-GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET")
-
-GOOGLE_REDIRECT_URI = os.getenv(
-    "GOOGLE_REDIRECT_URI",
-    f"{RENDER_URL}/google/callback"
-)
-
 PORT = int(
     os.getenv(
         "PORT",
@@ -69,37 +53,6 @@ SKYSMART_API = (
 )
 
 MAX_MESSAGE_LENGTH = 3900
-
-
-# ============================================================
-# GOOGLE
-# ============================================================
-
-# Нужны оба доступа:
-#
-# forms.body.readonly
-# -> чтение содержимого формы
-#
-# drive.readonly
-# -> поиск Google Form в Google Drive,
-#    когда пользователь прислал /d/e/.../viewform
-#
-GOOGLE_FORMS_SCOPE = (
-    "https://www.googleapis.com/auth/forms.body.readonly"
-)
-
-GOOGLE_DRIVE_SCOPE = (
-    "https://www.googleapis.com/auth/drive.readonly"
-)
-
-GOOGLE_SCOPES = [
-    GOOGLE_FORMS_SCOPE,
-    GOOGLE_DRIVE_SCOPE,
-]
-
-GOOGLE_TOKEN_ACCOUNT = "main"
-
-GOOGLE_OAUTH_STATE_TTL = 15 * 60
 
 
 # ============================================================
@@ -120,15 +73,6 @@ if not SUPABASE_SERVICE_KEY:
 
 if not OWNER_ID:
     raise RuntimeError("Не задан OWNER_ID")
-
-if not GOOGLE_CLIENT_ID:
-    raise RuntimeError("Не задан GOOGLE_CLIENT_ID")
-
-if not GOOGLE_CLIENT_SECRET:
-    raise RuntimeError("Не задан GOOGLE_CLIENT_SECRET")
-
-if not GOOGLE_REDIRECT_URI:
-    raise RuntimeError("Не задан GOOGLE_REDIRECT_URI")
 
 
 OWNER_ID = int(OWNER_ID)
@@ -441,476 +385,10 @@ def use_password(
 
 
 # ============================================================
-# GOOGLE OAUTH CONFIG
-# ============================================================
-
-def get_google_client_config():
-
-    return {
-        "web": {
-            "client_id": GOOGLE_CLIENT_ID,
-            "client_secret": GOOGLE_CLIENT_SECRET,
-            "auth_uri": (
-                "https://accounts.google.com/o/oauth2/auth"
-            ),
-            "token_uri": (
-                "https://oauth2.googleapis.com/token"
-            ),
-            "redirect_uris": [
-                GOOGLE_REDIRECT_URI
-            ],
-        }
-    }
-
-
-def create_google_flow(state=None):
-
-    flow = Flow.from_client_config(
-        get_google_client_config(),
-        scopes=GOOGLE_SCOPES,
-        redirect_uri=GOOGLE_REDIRECT_URI,
-    )
-
-    if state:
-        flow.state = state
-
-    return flow
-
-
-# ============================================================
-# GOOGLE OAUTH STATE
-# ============================================================
-
-def save_google_oauth_state(
-    state: str,
-    user_id: int
-):
-
-    try:
-
-        cleanup_google_oauth_states()
-
-        (
-            supabase
-            .table("google_oauth_states")
-            .insert({
-                "state": state,
-                "user_id": user_id,
-                "created_at": datetime.now(
-                    timezone.utc
-                ).isoformat(),
-            })
-            .execute()
-        )
-
-        print(
-            "OAuth state сохранён."
-        )
-
-        return True
-
-    except Exception as e:
-
-        print(
-            f"Ошибка сохранения OAuth state: {e}"
-        )
-
-        return False
-
-
-def get_google_oauth_state(state: str):
-
-    try:
-
-        result = (
-            supabase
-            .table("google_oauth_states")
-            .select("*")
-            .eq(
-                "state",
-                state
-            )
-            .limit(1)
-            .execute()
-        )
-
-        if not result.data:
-            return None
-
-        row = result.data[0]
-
-        created_at = row.get(
-            "created_at"
-        )
-
-        if created_at:
-
-            try:
-
-                created_dt = datetime.fromisoformat(
-                    str(created_at).replace(
-                        "Z",
-                        "+00:00"
-                    )
-                )
-
-                if created_dt.tzinfo is None:
-                    created_dt = created_dt.replace(
-                        tzinfo=timezone.utc
-                    )
-
-                age = (
-                    datetime.now(timezone.utc)
-                    - created_dt
-                ).total_seconds()
-
-                if age > GOOGLE_OAUTH_STATE_TTL:
-
-                    delete_google_oauth_state(
-                        state
-                    )
-
-                    return None
-
-                if age < -60:
-
-                    delete_google_oauth_state(
-                        state
-                    )
-
-                    return None
-
-            except Exception as e:
-
-                print(
-                    f"Ошибка проверки OAuth state: {e}"
-                )
-
-        return row
-
-    except Exception as e:
-
-        print(
-            f"Ошибка получения OAuth state: {e}"
-        )
-
-        return None
-
-
-def delete_google_oauth_state(
-    state: str
-):
-
-    try:
-
-        (
-            supabase
-            .table("google_oauth_states")
-            .delete()
-            .eq(
-                "state",
-                state
-            )
-            .execute()
-        )
-
-    except Exception as e:
-
-        print(
-            f"Ошибка удаления OAuth state: {e}"
-        )
-
-
-def cleanup_google_oauth_states():
-
-    try:
-
-        result = (
-            supabase
-            .table("google_oauth_states")
-            .select("state,created_at")
-            .execute()
-        )
-
-        if not result.data:
-            return
-
-        now = datetime.now(
-            timezone.utc
-        )
-
-        for row in result.data:
-
-            created_at = row.get(
-                "created_at"
-            )
-
-            if not created_at:
-                continue
-
-            try:
-
-                created_dt = datetime.fromisoformat(
-                    str(created_at).replace(
-                        "Z",
-                        "+00:00"
-                    )
-                )
-
-                if created_dt.tzinfo is None:
-                    created_dt = created_dt.replace(
-                        tzinfo=timezone.utc
-                    )
-
-                age = (
-                    now - created_dt
-                ).total_seconds()
-
-                if age > GOOGLE_OAUTH_STATE_TTL:
-
-                    delete_google_oauth_state(
-                        row["state"]
-                    )
-
-            except Exception:
-                continue
-
-    except Exception as e:
-
-        print(
-            f"Ошибка очистки OAuth states: {e}"
-        )
-
-
-# ============================================================
-# GOOGLE TOKEN
-# ============================================================
-
-def get_saved_google_credentials():
-
-    try:
-
-        result = (
-            supabase
-            .table("google_tokens")
-            .select("token_json")
-            .eq(
-                "account_name",
-                GOOGLE_TOKEN_ACCOUNT
-            )
-            .limit(1)
-            .execute()
-        )
-
-        if not result.data:
-            return None
-
-        token_json = (
-            result.data[0].get(
-                "token_json"
-            )
-        )
-
-        if not token_json:
-            return None
-
-        if isinstance(
-            token_json,
-            dict
-        ):
-
-            token_data = token_json
-
-        else:
-
-            token_data = json.loads(
-                token_json
-            )
-
-        credentials = (
-            Credentials
-            .from_authorized_user_info(
-                token_data,
-                scopes=GOOGLE_SCOPES
-            )
-        )
-
-        return credentials
-
-    except Exception as e:
-
-        print(
-            f"Ошибка получения Google token: {e}"
-        )
-
-        return None
-
-
-def save_google_credentials(
-    credentials
-):
-
-    token_json = credentials.to_json()
-
-    try:
-
-        existing = (
-            supabase
-            .table("google_tokens")
-            .select("id")
-            .eq(
-                "account_name",
-                GOOGLE_TOKEN_ACCOUNT
-            )
-            .limit(1)
-            .execute()
-        )
-
-        payload = {
-            "account_name": GOOGLE_TOKEN_ACCOUNT,
-            "token_json": token_json,
-        }
-
-        if existing.data:
-
-            (
-                supabase
-                .table("google_tokens")
-                .update(payload)
-                .eq(
-                    "account_name",
-                    GOOGLE_TOKEN_ACCOUNT
-                )
-                .execute()
-            )
-
-        else:
-
-            (
-                supabase
-                .table("google_tokens")
-                .insert(payload)
-                .execute()
-            )
-
-        print(
-            "Google OAuth token сохранён."
-        )
-
-    except Exception as e:
-
-        print(
-            f"Ошибка сохранения Google token: {e}"
-        )
-
-        raise
-
-
-def refresh_google_credentials(
-    credentials
-):
-
-    if (
-        credentials
-        and credentials.refresh_token
-        and not credentials.valid
-    ):
-
-        try:
-
-            from google.auth.transport.requests import (
-                Request as GoogleRequest
-            )
-
-            credentials.refresh(
-                GoogleRequest()
-            )
-
-            save_google_credentials(
-                credentials
-            )
-
-        except Exception as e:
-
-            print(
-                f"Ошибка обновления Google token: {e}"
-            )
-
-            return None
-
-    if not credentials or not credentials.valid:
-        return None
-
-    return credentials
-
-
-def get_google_service():
-
-    credentials = (
-        get_saved_google_credentials()
-    )
-
-    credentials = refresh_google_credentials(
-        credentials
-    )
-
-    if not credentials:
-        return None
-
-    try:
-
-        return build(
-            "forms",
-            "v1",
-            credentials=credentials,
-            cache_discovery=False
-        )
-
-    except Exception as e:
-
-        print(
-            f"Ошибка создания Google Forms service: {e}"
-        )
-
-        return None
-
-
-def get_google_drive_service():
-
-    credentials = (
-        get_saved_google_credentials()
-    )
-
-    credentials = refresh_google_credentials(
-        credentials
-    )
-
-    if not credentials:
-        return None
-
-    try:
-
-        return build(
-            "drive",
-            "v3",
-            credentials=credentials,
-            cache_discovery=False
-        )
-
-    except Exception as e:
-
-        print(
-            f"Ошибка создания Google Drive service: {e}"
-        )
-
-        return None
-
-
-# ============================================================
 # GOOGLE FORM URL
 # ============================================================
 
-def extract_google_form_id(text: str):
+def extract_google_form_url(text: str):
 
     if not text:
         return None
@@ -921,7 +399,7 @@ def extract_google_form_id(text: str):
 
     match = re.search(
         r"https?://docs\.google\.com/forms/d/e/"
-        r"([a-zA-Z0-9_-]+)"
+        r"[a-zA-Z0-9_-]+"
         r"(?:/[^?\s]*)?",
         text,
         flags=re.IGNORECASE
@@ -929,21 +407,22 @@ def extract_google_form_id(text: str):
 
     if match:
 
-        return {
-            "type": "published",
-            "id": match.group(1),
-            "url": match.group(0)
-        }
+        url = match.group(0)
+
+        url = url.rstrip(
+            ".,!?)]}>"
+        )
+
+        return url
 
     # --------------------------------------------------------
-    # /d/FORM_ID/edit
     # /d/FORM_ID/viewform
     # --------------------------------------------------------
 
     match = re.search(
         r"https?://docs\.google\.com/forms/d/"
         r"(?!e(?:/|$))"
-        r"([a-zA-Z0-9_-]+)"
+        r"[a-zA-Z0-9_-]+"
         r"(?:/[^?\s]*)?",
         text,
         flags=re.IGNORECASE
@@ -951,261 +430,612 @@ def extract_google_form_id(text: str):
 
     if match:
 
-        return {
-            "type": "direct",
-            "id": match.group(1),
-            "url": match.group(0)
-        }
+        url = match.group(0)
+
+        url = url.rstrip(
+            ".,!?)]}>"
+        )
+
+        # Если прислали /edit, пытаемся заменить
+        # на публичную страницу.
+        url = re.sub(
+            r"/edit(?:[/?#].*)?$",
+            "/viewform",
+            url,
+            flags=re.IGNORECASE
+        )
+
+        return url
 
     return None
 
 
 # ============================================================
-# GOOGLE FORM ID ИЗ PUBLIC /d/e/... ССЫЛКИ
+# GOOGLE FORMS HTML
 # ============================================================
 
-def resolve_published_google_form_id(
-    published_url: str
+GOOGLE_FORMS_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/139.0 Safari/537.36"
+    ),
+    "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8",
+}
+
+
+def fetch_google_form_html(
+    url: str
+) -> str:
+
+    response = requests.get(
+        url,
+        headers=GOOGLE_FORMS_HEADERS,
+        timeout=30,
+        allow_redirects=True
+    )
+
+    response.raise_for_status()
+
+    if not response.text:
+        raise RuntimeError(
+            "Google Form вернула пустую страницу."
+        )
+
+    return response.text
+
+
+# ============================================================
+# ПОИСК FB_PUBLIC_LOAD_DATA_
+# ============================================================
+
+def extract_fb_public_load_data(
+    page_html: str
 ):
 
-    drive_service = (
-        get_google_drive_service()
-    )
-
-    forms_service = (
-        get_google_service()
-    )
-
-    if not drive_service or not forms_service:
-
+    if not page_html:
         raise RuntimeError(
-            "Google аккаунт ещё не подключён."
+            "Пустой HTML Google Form."
         )
 
-    match = re.search(
-        r"/forms/d/e/"
-        r"([a-zA-Z0-9_-]+)"
-        r"/",
-        published_url,
-        flags=re.IGNORECASE
+    marker = "FB_PUBLIC_LOAD_DATA_"
+
+    marker_position = page_html.find(
+        marker
     )
 
-    if not match:
+    if marker_position == -1:
 
         raise RuntimeError(
-            "Некорректная публичная ссылка Google Form."
+            "Не удалось найти данные Google Form "
+            "в HTML страницы."
         )
 
-    public_id = match.group(1)
+    # --------------------------------------------------------
+    # Ищем первую "[" после FB_PUBLIC_LOAD_DATA_
+    # --------------------------------------------------------
 
-    print(
-        f"Ищем Google Form по public ID: {public_id}"
+    start = page_html.find(
+        "[",
+        marker_position
     )
 
+    if start == -1:
+
+        raise RuntimeError(
+            "Структура Google Form повреждена "
+            "или изменилась."
+        )
+
     # --------------------------------------------------------
-    # Получаем список Google Forms из Drive
+    # JSONDecoder.raw_decode умеет прочитать
+    # JSON-массив из начала строки, даже если
+    # после него идут дополнительные символы.
     # --------------------------------------------------------
+
+    decoder = json.JSONDecoder()
 
     try:
 
-        response = (
-            drive_service
-            .files()
-            .list(
-                q=(
-                    "mimeType = "
-                    "'application/vnd.google-apps.form' "
-                    "and trashed = false"
-                ),
-                spaces="drive",
-                fields=(
-                    "files(id,name,webViewLink)"
-                ),
-                pageSize=1000
+        data, end_position = (
+            decoder.raw_decode(
+                page_html[start:]
             )
-            .execute()
         )
 
-    except HttpError as e:
+    except json.JSONDecodeError as e:
 
         print(
-            f"Google Drive API error: {e}"
+            "JSON decode error:",
+            e
         )
 
-        raise RuntimeError(
-            "Не удалось получить список Google Forms "
-            "из Google Drive."
+        # ----------------------------------------------------
+        # Запасной вариант:
+        # пытаемся найти конец JSON перед </script>
+        # ----------------------------------------------------
+
+        script_end = page_html.find(
+            "</script>",
+            start
         )
 
-    files = response.get(
-        "files",
-        []
-    )
+        if script_end == -1:
 
-    print(
-        f"Google Drive вернул форм: {len(files)}"
-    )
+            raise RuntimeError(
+                "Не удалось разобрать структуру "
+                "Google Form."
+            )
 
-    # --------------------------------------------------------
-    # Проверяем каждую форму через Forms API
-    #
-    # У формы есть responderUri.
-    # Сравниваем его с public URL.
-    # --------------------------------------------------------
+        raw = page_html[
+            start:script_end
+        ].strip()
 
-    for file in files:
-
-        form_id = file.get(
-            "id"
+        # Иногда в конце стоит ;
+        raw = raw.rstrip(
+            "; \r\n\t"
         )
-
-        if not form_id:
-            continue
 
         try:
 
-            form_data = (
-                forms_service
-                .forms()
-                .get(
-                    formId=form_id
-                )
-                .execute()
+            data = json.loads(
+                raw
             )
 
-        except HttpError as e:
-
-            status = getattr(
-                e.resp,
-                "status",
-                None
-            )
-
-            # Например, форма может быть недоступна
-            # приложению.
-            if status in (403, 404):
-                continue
+        except Exception as json_error:
 
             print(
-                f"Ошибка проверки формы "
-                f"{form_id}: {e}"
+                "Fallback JSON error:",
+                json_error
             )
+
+            raise RuntimeError(
+                "Google Form использует формат, "
+                "который бот пока не смог разобрать."
+            )
+
+    if not isinstance(
+        data,
+        list
+    ):
+
+        raise RuntimeError(
+            "Google Form вернула некорректную структуру."
+        )
+
+    return data
+
+
+# ============================================================
+# ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ GOOGLE FORMS
+# ============================================================
+
+def safe_get(
+    value,
+    index,
+    default=None
+):
+
+    if not isinstance(
+        value,
+        list
+    ):
+
+        return default
+
+    if index < 0 or index >= len(value):
+
+        return default
+
+    return value[index]
+
+
+def clean_google_text(
+    value
+) -> str:
+
+    if value is None:
+        return ""
+
+    if not isinstance(
+        value,
+        str
+    ):
+
+        value = str(value)
+
+    value = html.unescape(
+        value
+    )
+
+    value = value.replace(
+        "\r\n",
+        "\n"
+    )
+
+    value = value.replace(
+        "\r",
+        "\n"
+    )
+
+    # Убираем слишком много пустых строк
+    value = re.sub(
+        r"\n{3,}",
+        "\n\n",
+        value
+    )
+
+    return value.strip()
+
+
+def get_google_form_meta(
+    data
+):
+
+    title = ""
+    description = ""
+
+    second = safe_get(
+        data,
+        1,
+        []
+    )
+
+    if isinstance(
+        second,
+        list
+    ):
+
+        # Описание
+        description = clean_google_text(
+            safe_get(
+                second,
+                0,
+                ""
+            )
+        )
+
+        # Заголовок
+        title = clean_google_text(
+            safe_get(
+                second,
+                8,
+                ""
+            )
+        )
+
+    if not title:
+        title = "Google Forms"
+
+    return title, description
+
+
+# ============================================================
+# GOOGLE FORMS QUESTION PARSER
+# ============================================================
+
+def parse_google_form_items(
+    data
+):
+
+    second = safe_get(
+        data,
+        1,
+        []
+    )
+
+    if not isinstance(
+        second,
+        list
+    ):
+
+        return []
+
+    items = safe_get(
+        second,
+        1,
+        []
+    )
+
+    if not isinstance(
+        items,
+        list
+    ):
+
+        return []
+
+    parsed_items = []
+
+    for raw_item in items:
+
+        if not isinstance(
+            raw_item,
+            list
+        ):
 
             continue
 
-        responder_uri = (
-            form_data
-            .get("responderUri")
-            or ""
-        )
-
-        print(
-            f"Проверяем форму "
-            f"{form_id}: {responder_uri}"
-        )
-
         # ----------------------------------------------------
-        # Самый надёжный вариант:
-        # public ID должен присутствовать в responderUri.
+        # Структура:
+        #
+        # [internal_id, title, description, type, ...]
         # ----------------------------------------------------
 
-        if public_id in responder_uri:
+        item_title = clean_google_text(
+            safe_get(
+                raw_item,
+                1,
+                ""
+            )
+        )
 
-            print(
-                "НАЙДЕН НАСТОЯЩИЙ FORM ID: "
-                f"{form_id}"
+        item_description = clean_google_text(
+            safe_get(
+                raw_item,
+                2,
+                ""
+            )
+        )
+
+        item_type = safe_get(
+            raw_item,
+            3,
+            None
+        )
+
+        item_sub = safe_get(
+            raw_item,
+            4,
+            []
+        )
+
+        if not isinstance(
+            item_sub,
+            list
+        ):
+
+            item_sub = []
+
+        parsed = {
+            "title": item_title,
+            "description": item_description,
+            "type": item_type,
+            "options": [],
+            "required": False,
+            "rows": [],
+            "columns": [],
+        }
+
+        # ----------------------------------------------------
+        # Вытаскиваем данные из sub-массивов
+        # ----------------------------------------------------
+
+        for sub in item_sub:
+
+            if not isinstance(
+                sub,
+                list
+            ):
+
+                continue
+
+            # required обычно находится здесь
+            if len(sub) > 2:
+
+                if sub[2] in (
+                    True,
+                    1
+                ):
+
+                    parsed["required"] = True
+
+            # options
+            option_data = safe_get(
+                sub,
+                1,
+                None
             )
 
-            return form_id
+            if isinstance(
+                option_data,
+                list
+            ):
+
+                for option in option_data:
+
+                    if isinstance(
+                        option,
+                        list
+                    ) and option:
+
+                        value = clean_google_text(
+                            option[0]
+                        )
+
+                        if value:
+
+                            parsed[
+                                "options"
+                            ].append(
+                                value
+                            )
 
         # ----------------------------------------------------
-        # Дополнительная проверка:
-        # иногда URL может быть представлен
-        # в другом виде.
+        # ШКАЛА
+        # ----------------------------------------------------
+
+        if item_type == 5:
+
+            first_sub = safe_get(
+                item_sub,
+                0,
+                []
+            )
+
+            if isinstance(
+                first_sub,
+                list
+            ):
+
+                scale_values = safe_get(
+                    first_sub,
+                    1,
+                    []
+                )
+
+                if isinstance(
+                    scale_values,
+                    list
+                ):
+
+                    low = safe_get(
+                        scale_values,
+                        0,
+                        ""
+                    )
+
+                    high = safe_get(
+                        scale_values,
+                        -1,
+                        ""
+                    )
+
+                    # Обычно labels находятся после
+                    # диапазона.
+                    labels = []
+
+                    for value in scale_values:
+
+                        if isinstance(
+                            value,
+                            str
+                        ):
+
+                            labels.append(
+                                clean_google_text(
+                                    value
+                                )
+                            )
+
+                    parsed["scale_low"] = low
+                    parsed["scale_high"] = high
+
+                    if len(labels) >= 2:
+
+                        parsed[
+                            "scale_low_label"
+                        ] = labels[-2]
+
+                        parsed[
+                            "scale_high_label"
+                        ] = labels[-1]
+
+        # ----------------------------------------------------
+        # GRID
+        # ----------------------------------------------------
+
+        if item_type in (
+            7,
+            11
+        ):
+
+            for sub in item_sub:
+
+                if not isinstance(
+                    sub,
+                    list
+                ):
+
+                    continue
+
+                options = safe_get(
+                    sub,
+                    1,
+                    []
+                )
+
+                if not isinstance(
+                    options,
+                    list
+                ):
+
+                    continue
+
+                values = []
+
+                for option in options:
+
+                    if isinstance(
+                        option,
+                        list
+                    ) and option:
+
+                        value = clean_google_text(
+                            option[0]
+                        )
+
+                        if value:
+                            values.append(
+                                value
+                            )
+
+                if values:
+
+                    if not parsed["rows"]:
+
+                        parsed[
+                            "rows"
+                        ] = values
+
+                    else:
+
+                        parsed[
+                            "columns"
+                        ] = values
+
+        # ----------------------------------------------------
+        # Удаляем дубли вариантов
+        # ----------------------------------------------------
+
+        unique_options = []
+
+        for option in parsed["options"]:
+
+            if option not in unique_options:
+
+                unique_options.append(
+                    option
+                )
+
+        parsed["options"] = unique_options
+
+        # ----------------------------------------------------
+        # Сохраняем только элементы с содержимым.
+        # Разделы тоже могут иметь title.
         # ----------------------------------------------------
 
         if (
-            responder_uri
-            and published_url.rstrip("/")
-            == responder_uri.rstrip("/")
+            item_title
+            or parsed["options"]
+            or item_type in (
+                0,
+                1,
+                2,
+                3,
+                4,
+                5,
+                7,
+                9,
+                10,
+                11,
+            )
         ):
 
-            print(
-                "Форма найдена по полному responderUri: "
-                f"{form_id}"
+            parsed_items.append(
+                parsed
             )
 
-            return form_id
-
-    print(
-        "Не удалось сопоставить public ID "
-        "с Google Form."
-    )
-
-    return None
-
-
-# ============================================================
-# ПОЛУЧЕНИЕ GOOGLE FORM
-# ============================================================
-
-def get_google_form(
-    form_reference
-):
-
-    if isinstance(
-        form_reference,
-        dict
-    ):
-
-        form_type = form_reference.get(
-            "type"
-        )
-
-        form_id = form_reference.get(
-            "id"
-        )
-
-        if form_type == "published":
-
-            form_id = resolve_published_google_form_id(
-                form_reference.get("url")
-            )
-
-            if not form_id:
-
-                raise RuntimeError(
-                    "Не удалось найти эту опубликованную "
-                    "форму в Google Drive подключённого "
-                    "аккаунта."
-                )
-
-    else:
-
-        form_id = form_reference
-
-    if not form_id:
-
-        raise RuntimeError(
-            "Не указан ID Google Form."
-        )
-
-    service = get_google_service()
-
-    if not service:
-
-        raise RuntimeError(
-            "Google аккаунт ещё не подключён."
-        )
-
-    return (
-        service
-        .forms()
-        .get(
-            formId=form_id
-        )
-        .execute()
-    )
+    return parsed_items
 
 
 # ============================================================
@@ -1213,37 +1043,17 @@ def get_google_form(
 # ============================================================
 
 def format_google_form(
-    form_data
+    data
 ):
 
-    if not isinstance(
-        form_data,
-        dict
-    ):
-
-        return (
-            "❌ Google Forms вернул "
-            "неожиданный ответ."
+    title, description = (
+        get_google_form_meta(
+            data
         )
-
-    info = form_data.get(
-        "info",
-        {}
     )
 
-    title = info.get(
-        "title",
-        "Google Form"
-    )
-
-    description = info.get(
-        "description",
-        ""
-    )
-
-    items = form_data.get(
-        "items",
-        []
+    items = parse_google_form_items(
+        data
     )
 
     lines = []
@@ -1253,7 +1063,7 @@ def format_google_form(
     )
 
     lines.append(
-        f"📝 <b>{html.escape(str(title))}</b>"
+        f"📝 <b>{html.escape(title)}</b>"
     )
 
     if description:
@@ -1261,7 +1071,7 @@ def format_google_form(
         clean_description = re.sub(
             r"\s+",
             " ",
-            str(description)
+            description
         ).strip()
 
         if clean_description:
@@ -1279,161 +1089,292 @@ def format_google_form(
 
     for item in items:
 
-        if not isinstance(
-            item,
-            dict
-        ):
-            continue
+        item_type = item.get(
+            "type"
+        )
 
-        title_text = item.get(
+        item_title = item.get(
             "title",
             ""
         )
 
-        question_item = item.get(
-            "questionItem"
+        item_description = item.get(
+            "description",
+            ""
         )
 
-        if not question_item:
+        # ----------------------------------------------------
+        # Раздел / заголовок секции
+        # ----------------------------------------------------
+
+        if item_type in (
+            8,
+            6
+        ):
+
+            if item_title:
+
+                lines.append(
+                    "📌 <b>"
+                    + html.escape(
+                        item_title
+                    )
+                    + "</b>"
+                )
+
+            if item_description:
+
+                lines.append(
+                    html.escape(
+                        item_description
+                    )
+                )
+
+            lines.append("")
+
             continue
+
+        # ----------------------------------------------------
+        # Обычный вопрос
+        # ----------------------------------------------------
 
         question_number += 1
 
+        if not item_title:
+
+            item_title = "Без названия"
+
+        required_text = ""
+
+        if item.get(
+            "required"
+        ):
+
+            required_text = " <i>(обязательный)</i>"
+
         lines.append(
             f"<b>{question_number}. "
-            f"{html.escape(str(title_text))}</b>"
+            f"{html.escape(item_title)}</b>"
+            f"{required_text}"
         )
 
-        question = question_item.get(
-            "question",
-            {}
-        )
+        if item_description:
+
+            lines.append(
+                "   ℹ️ "
+                + html.escape(
+                    item_description
+                )
+            )
 
         # ----------------------------------------------------
         # ВАРИАНТЫ
         # ----------------------------------------------------
 
-        choice_question = question.get(
-            "choiceQuestion"
+        options = item.get(
+            "options",
+            []
         )
 
-        if choice_question:
+        if options:
 
-            choices = choice_question.get(
-                "options",
-                []
-            )
+            for option in options:
 
-            for choice in choices:
-
-                if not isinstance(
-                    choice,
-                    dict
-                ):
-                    continue
-
-                value = choice.get(
-                    "value",
-                    ""
+                lines.append(
+                    "   • "
+                    + html.escape(
+                        str(option)
+                    )
                 )
 
-                if value:
-
-                    lines.append(
-                        "   • "
-                        + html.escape(
-                            str(value)
-                        )
-                    )
-
         # ----------------------------------------------------
-        # ТЕКСТ
+        # ТЕКСТОВОЕ ПОЛЕ
         # ----------------------------------------------------
 
-        text_question = question.get(
-            "textQuestion"
-        )
-
-        if text_question:
+        if item_type == 0:
 
             lines.append(
                 "   ✏️ "
-                "<i>Поле для ввода ответа</i>"
+                "<i>Краткий текстовый ответ</i>"
             )
+
+        elif item_type == 1:
+
+            lines.append(
+                "   📝 "
+                "<i>Развёрнутый текстовый ответ</i>"
+            )
+
+        # ----------------------------------------------------
+        # CHECKBOX
+        # ----------------------------------------------------
+
+        elif item_type == 4:
+
+            if not options:
+
+                lines.append(
+                    "   ☑️ "
+                    "<i>Можно выбрать несколько вариантов</i>"
+                )
+
+        # ----------------------------------------------------
+        # RADIO
+        # ----------------------------------------------------
+
+        elif item_type == 2:
+
+            if not options:
+
+                lines.append(
+                    "   🔘 "
+                    "<i>Один вариант ответа</i>"
+                )
+
+        # ----------------------------------------------------
+        # DROPDOWN
+        # ----------------------------------------------------
+
+        elif item_type == 3:
+
+            if not options:
+
+                lines.append(
+                    "   🔽 "
+                    "<i>Выбор из списка</i>"
+                )
 
         # ----------------------------------------------------
         # ШКАЛА
         # ----------------------------------------------------
 
-        scale_question = question.get(
-            "scaleQuestion"
-        )
+        elif item_type == 5:
 
-        if scale_question:
-
-            low = scale_question.get(
-                "low",
+            low = item.get(
+                "scale_low",
                 ""
             )
 
-            high = scale_question.get(
-                "high",
-                ""
-            )
-
-            low_label = scale_question.get(
-                "lowLabel",
-                ""
-            )
-
-            high_label = scale_question.get(
-                "highLabel",
+            high = item.get(
+                "scale_high",
                 ""
             )
 
             scale_text = (
-                f"   📊 Шкала: "
-                f"{low}–{high}"
+                f"   📊 <b>Шкала:</b> "
+                f"{html.escape(str(low))}"
+                f"–"
+                f"{html.escape(str(high))}"
+            )
+
+            low_label = item.get(
+                "scale_low_label",
+                ""
+            )
+
+            high_label = item.get(
+                "scale_high_label",
+                ""
             )
 
             if low_label:
 
                 scale_text += (
-                    f" ({html.escape(str(low_label))}"
+                    f" — "
+                    f"{html.escape(str(low_label))}"
                 )
 
             if high_label:
 
-                if low_label:
-
-                    scale_text += (
-                        f" → "
-                        f"{html.escape(str(high_label))})"
-                    )
-
-                else:
-
-                    scale_text += (
-                        f" ("
-                        f"{html.escape(str(high_label))})"
-                    )
-
-            elif low_label:
-
-                scale_text += ")"
+                scale_text += (
+                    f" → "
+                    f"{html.escape(str(high_label))}"
+                )
 
             lines.append(
                 scale_text
             )
+
+        # ----------------------------------------------------
+        # ДАТА
+        # ----------------------------------------------------
+
+        elif item_type == 9:
+
+            lines.append(
+                "   📅 "
+                "<i>Поле для выбора даты</i>"
+            )
+
+        # ----------------------------------------------------
+        # ВРЕМЯ
+        # ----------------------------------------------------
+
+        elif item_type == 10:
+
+            lines.append(
+                "   🕐 "
+                "<i>Поле для выбора времени</i>"
+            )
+
+        # ----------------------------------------------------
+        # GRID
+        # ----------------------------------------------------
+
+        elif item_type in (
+            7,
+            11
+        ):
+
+            rows = item.get(
+                "rows",
+                []
+            )
+
+            columns = item.get(
+                "columns",
+                []
+            )
+
+            if rows:
+
+                lines.append(
+                    "   📋 <b>Строки:</b>"
+                )
+
+                for row in rows:
+
+                    lines.append(
+                        "      • "
+                        + html.escape(
+                            str(row)
+                        )
+                    )
+
+            if columns:
+
+                lines.append(
+                    "   📊 <b>Варианты:</b>"
+                )
+
+                for column in columns:
+
+                    lines.append(
+                        "      • "
+                        + html.escape(
+                            str(column)
+                        )
+                    )
 
         lines.append("")
 
     if question_number == 0:
 
         return (
-            "❌ В форме не найдено вопросов.\n\n"
-            "Возможно, форма содержит только "
-            "разделы или описание."
+            "❌ <b>В форме не найдено вопросов.</b>\n\n"
+            "Возможно, Google изменил структуру "
+            "страницы или форма недоступна "
+            "без авторизации."
         )
 
     return "\n".join(
@@ -1442,331 +1383,22 @@ def format_google_form(
 
 
 # ============================================================
-# /GOOGLE
+# ПОЛУЧЕНИЕ GOOGLE FORM
 # ============================================================
 
-async def google_command(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
+def get_google_form(
+    form_url: str
 ):
 
-    if not update.effective_user:
-        return
-
-    if not update.message:
-        return
-
-    user_id = update.effective_user.id
-
-    if not is_authorized(
-        user_id
-    ):
-
-        await update.message.reply_text(
-            "⛔ Сначала авторизуйтесь в боте."
-        )
-
-        return
-
-    if user_id != OWNER_ID:
-
-        await update.message.reply_text(
-            "⛔ Подключать Google может "
-            "только владелец бота."
-        )
-
-        return
-
-    cleanup_google_oauth_states()
-
-    state = secrets.token_urlsafe(
-        32
+    page_html = fetch_google_form_html(
+        form_url
     )
 
-    if not save_google_oauth_state(
-        state,
-        user_id
-    ):
-
-        await update.message.reply_text(
-            "❌ Не удалось создать "
-            "OAuth-сессию.\n\n"
-            "Попробуйте ещё раз."
-        )
-
-        return
-
-    flow = create_google_flow(
-        state=state
+    data = extract_fb_public_load_data(
+        page_html
     )
 
-    authorization_url, returned_state = (
-        flow.authorization_url(
-            access_type="offline",
-            prompt="consent",
-            include_granted_scopes="true"
-        )
-    )
-
-    if returned_state != state:
-
-        delete_google_oauth_state(
-            state
-        )
-
-        if not save_google_oauth_state(
-            returned_state,
-            user_id
-        ):
-
-            await update.message.reply_text(
-                "❌ Не удалось сохранить "
-                "OAuth-сессию."
-            )
-
-            return
-
-    keyboard = InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton(
-                "🔐 Подключить Google",
-                url=authorization_url
-            )
-        ]
-    ])
-
-    await update.message.reply_text(
-        "🔐 <b>Подключение Google-аккаунта</b>\n\n"
-        "Нажмите кнопку ниже и войдите "
-        "именно в созданный аккаунт-пустышку.\n\n"
-        "После подтверждения Google "
-        "автоматически вернёт вас на сервер.",
-        parse_mode="HTML",
-        reply_markup=keyboard
-    )
-
-
-# ============================================================
-# GOOGLE CALLBACK
-# ============================================================
-
-async def google_callback(
-    request: Request
-):
-
-    error = request.query_params.get(
-        "error"
-    )
-
-    if error:
-
-        return HTMLResponse(
-            f"""
-            <html>
-            <head>
-                <meta charset="utf-8">
-                <title>Google OAuth</title>
-            </head>
-            <body>
-            <h2>❌ Google авторизация отменена</h2>
-            <p>{html.escape(error)}</p>
-            <p>Можно закрыть эту страницу.</p>
-            </body>
-            </html>
-            """,
-            status_code=400
-        )
-
-    state = request.query_params.get(
-        "state"
-    )
-
-    code = request.query_params.get(
-        "code"
-    )
-
-    if not state or not code:
-
-        return HTMLResponse(
-            """
-            <html>
-            <head>
-                <meta charset="utf-8">
-            </head>
-            <body>
-            <h2>❌ Неверный OAuth callback</h2>
-            <p>
-            Не хватает параметров state или code.
-            </p>
-            </body>
-            </html>
-            """,
-            status_code=400
-        )
-
-    oauth_state = get_google_oauth_state(
-        state
-    )
-
-    if not oauth_state:
-
-        return HTMLResponse(
-            """
-            <html>
-            <head>
-                <meta charset="utf-8">
-                <title>OAuth ошибка</title>
-            </head>
-            <body>
-            <h2>❌ OAuth-сессия недействительна</h2>
-            <p>
-            Эта OAuth-сессия уже истекла
-            или не существует.
-            </p>
-            <p>
-            Вернитесь в Telegram
-            и запустите /google ещё раз.
-            </p>
-            </body>
-            </html>
-            """,
-            status_code=400
-        )
-
-    try:
-
-        state_user_id = int(
-            oauth_state.get(
-                "user_id"
-            )
-        )
-
-    except Exception:
-
-        state_user_id = None
-
-    if state_user_id != OWNER_ID:
-
-        delete_google_oauth_state(
-            state
-        )
-
-        return HTMLResponse(
-            """
-            <html>
-            <body>
-            <h2>❌ Недействительная OAuth-сессия</h2>
-            </body>
-            </html>
-            """,
-            status_code=403
-        )
-
-    try:
-
-        flow = create_google_flow(
-            state=state
-        )
-
-        flow.fetch_token(
-            authorization_response=str(
-                request.url
-            )
-        )
-
-        credentials = flow.credentials
-
-        if not credentials.refresh_token:
-
-            delete_google_oauth_state(
-                state
-            )
-
-            return HTMLResponse(
-                """
-                <html>
-                <head>
-                    <meta charset="utf-8">
-                </head>
-                <body>
-                <h2>
-                ❌ Google не выдал refresh token
-                </h2>
-                <p>
-                Вернитесь в Telegram
-                и запустите /google ещё раз.
-                </p>
-                </body>
-                </html>
-                """,
-                status_code=400
-            )
-
-        save_google_credentials(
-            credentials
-        )
-
-        delete_google_oauth_state(
-            state
-        )
-
-        print(
-            "Google OAuth успешно завершён."
-        )
-
-        return HTMLResponse(
-            """
-            <html>
-            <head>
-                <meta charset="utf-8">
-                <title>Google подключён</title>
-            </head>
-            <body>
-            <h2>✅ Google успешно подключён!</h2>
-            <p>
-            Аккаунт-пустышка успешно авторизован.
-            </p>
-            <p>
-            Теперь можно закрыть эту страницу,
-            вернуться в Telegram и выбрать
-            «📄 Google Forms».
-            </p>
-            </body>
-            </html>
-            """
-        )
-
-    except Exception as e:
-
-        print(
-            f"Google OAuth callback error: {e}"
-        )
-
-        delete_google_oauth_state(
-            state
-        )
-
-        return HTMLResponse(
-            """
-            <html>
-            <head>
-                <meta charset="utf-8">
-                <title>Google OAuth</title>
-            </head>
-            <body>
-            <h2>❌ Ошибка авторизации Google</h2>
-            <p>
-            Не удалось завершить авторизацию.
-            </p>
-            <p>
-            Проверьте настройки Google Cloud
-            и попробуйте снова через /google.
-            </p>
-            </body>
-            </html>
-            """,
-            status_code=500
-        )
+    return data
 
 
 # ============================================================
@@ -2577,19 +2209,19 @@ async def handle_google_forms(
     text: str
 ):
 
-    form_reference = extract_google_form_id(
+    form_url = extract_google_form_url(
         text
     )
 
-    if not form_reference:
+    if not form_url:
 
         await update.message.reply_text(
             "❗ <b>Отправьте ссылку "
             "на Google Form.</b>\n\n"
             "Поддерживаются ссылки:\n"
-            "• /d/FORM_ID/edit\n"
-            "• /d/FORM_ID/viewform\n"
-            "• /d/e/.../viewform",
+            "• https://docs.google.com/forms/d/e/.../viewform\n"
+            "• https://docs.google.com/forms/d/.../viewform\n"
+            "• https://docs.google.com/forms/d/.../edit",
             parse_mode="HTML"
         )
 
@@ -2597,7 +2229,7 @@ async def handle_google_forms(
 
     processing_message = (
         await update.message.reply_text(
-            "⏳ <b>Получаю Google Form...</b>",
+            "⏳ <b>Открываю Google Form...</b>",
             parse_mode="HTML"
         )
     )
@@ -2606,7 +2238,7 @@ async def handle_google_forms(
 
         form_data = await asyncio.to_thread(
             get_google_form,
-            form_reference
+            form_url
         )
 
         result = format_google_form(
@@ -2620,48 +2252,53 @@ async def handle_google_forms(
             result
         )
 
-    except HttpError as e:
+    except requests.Timeout:
 
         print(
-            f"Google Forms API error: {e}"
+            "Google Form timeout"
         )
 
-        status = getattr(
-            e.resp,
-            "status",
-            None
+        await processing_message.edit_text(
+            "❌ <b>Google Form слишком долго "
+            "отвечает.</b>\n\n"
+            "Попробуйте ещё раз.",
+            parse_mode="HTML"
         )
 
-        if status == 401:
+    except requests.HTTPError as e:
+
+        print(
+            f"Google Form HTTP error: {e}"
+        )
+
+        status = None
+
+        if e.response is not None:
+
+            status = e.response.status_code
+
+        if status == 404:
 
             message = (
-                "🔐 <b>Авторизация Google "
-                "истекла.</b>\n\n"
-                "Запустите /google ещё раз."
+                "❌ <b>Google Form не найдена.</b>\n\n"
+                "Проверьте ссылку."
             )
 
         elif status == 403:
 
             message = (
-                "❌ <b>Google не разрешил "
-                "доступ к этой форме.</b>\n\n"
-                "Проверьте, что аккаунт-пустышка "
-                "имеет доступ к форме."
-            )
-
-        elif status == 404:
-
-            message = (
-                "❌ <b>Google Form не найдена.</b>\n\n"
-                "Проверьте ссылку и доступ "
-                "подключённого Google-аккаунта."
+                "🔒 <b>Google не разрешил "
+                "открыть эту форму.</b>\n\n"
+                "Возможно, форма требует входа "
+                "в Google-аккаунт или доступ "
+                "ограничен."
             )
 
         else:
 
             message = (
-                "❌ Google Forms API "
-                "вернул ошибку.\n\n"
+                "❌ <b>Не удалось открыть "
+                "Google Form.</b>\n\n"
                 "Попробуйте ещё раз."
             )
 
@@ -2673,35 +2310,23 @@ async def handle_google_forms(
     except RuntimeError as e:
 
         print(
-            f"Google Forms runtime error: {e}"
+            f"Google Form runtime error: {e}"
         )
 
         error_text = str(e)
 
-        if "Google аккаунт" in error_text:
+        if (
+            "FB_PUBLIC_LOAD_DATA_" in error_text
+            or "структуру" in error_text
+            or "разобрать" in error_text
+        ):
 
             message = (
-                "🔐 <b>Google ещё не подключён.</b>\n\n"
-                "Используйте команду /google."
-            )
-
-        elif "Google Drive" in error_text:
-
-            message = (
-                "❌ <b>Не удалось найти форму "
-                "в Google Drive.</b>\n\n"
-                "Убедитесь, что подключённый "
-                "Google-аккаунт имеет доступ "
-                "к этой форме."
-            )
-
-        elif "опубликованную" in error_text:
-
-            message = (
-                "⚠️ <b>Не удалось определить "
-                "форму по публичной ссылке.</b>\n\n"
-                "Попробуйте отправить ссылку "
-                "на редактирование формы."
+                "⚠️ <b>Не удалось разобрать "
+                "эту Google Form.</b>\n\n"
+                "Возможно, Google изменил формат "
+                "страницы или форма требует "
+                "авторизацию."
             )
 
         else:
@@ -2719,13 +2344,14 @@ async def handle_google_forms(
     except requests.RequestException as e:
 
         print(
-            f"Google Forms request error: {e}"
+            f"Google Form request error: {e}"
         )
 
         await processing_message.edit_text(
-            "❌ Не удалось открыть "
-            "Google Form.\n\n"
-            "Попробуйте ещё раз."
+            "❌ <b>Не удалось открыть "
+            "Google Form.</b>\n\n"
+            "Проверьте ссылку и попробуйте ещё раз.",
+            parse_mode="HTML"
         )
 
     except Exception as e:
@@ -2735,8 +2361,10 @@ async def handle_google_forms(
         )
 
         await processing_message.edit_text(
-            "❌ Произошла ошибка при "
-            "обработке Google Form."
+            "❌ <b>Произошла ошибка при "
+            "обработке Google Form.</b>\n\n"
+            "Попробуйте ещё раз.",
+            parse_mode="HTML"
         )
 
 
@@ -2840,10 +2468,9 @@ async def show_help(
         "Выберите этот режим и отправьте "
         "ссылку на Google Form.\n\n"
 
-        "🔐 <b>Google</b>\n"
-        "Команда /google используется для "
-        "первоначального подключения "
-        "аккаунта-пустышки.\n\n"
+        "Google Form может быть чужой — "
+        "владельцем формы быть не обязательно, "
+        "если форма доступна по публичной ссылке.\n\n"
 
         "🤖 Бот обработает ссылку "
         "в соответствии с выбранным режимом.",
@@ -2944,8 +2571,9 @@ async def message_handler(
         await update.message.reply_text(
             "📄 <b>Режим Google Forms выбран.</b>\n\n"
             "Отправьте ссылку на Google Form.\n\n"
-            "Поддерживается и публичная ссылка "
-            "вида /d/e/.../viewform.",
+            "Поддерживается публичная ссылка:\n"
+            "<code>/d/e/.../viewform</code>\n\n"
+            "Владельцем формы быть не обязательно.",
             parse_mode="HTML",
             reply_markup=MAIN_KEYBOARD
         )
@@ -3015,13 +2643,6 @@ application.add_handler(
 )
 
 application.add_handler(
-    CommandHandler(
-        "google",
-        google_command
-    )
-)
-
-application.add_handler(
     MessageHandler(
         filters.TEXT & ~filters.COMMAND,
         message_handler
@@ -3070,19 +2691,6 @@ async def telegram_webhook(
 
 
 # ============================================================
-# GOOGLE CALLBACK ROUTE
-# ============================================================
-
-async def google_callback_route(
-    request: Request
-):
-
-    return await google_callback(
-        request
-    )
-
-
-# ============================================================
 # STARLETTE
 # ============================================================
 
@@ -3125,8 +2733,6 @@ async def startup():
 
         initialize_passwords()
 
-        cleanup_google_oauth_states()
-
         await application.initialize()
 
         await application.start()
@@ -3146,8 +2752,7 @@ async def startup():
         )
 
         print(
-            f"Google callback:\n"
-            f"{GOOGLE_REDIRECT_URI}"
+            "Google Forms: HTML parser"
         )
 
         print(
@@ -3218,12 +2823,6 @@ app.router.routes.extend([
         "/telegram",
         telegram_webhook,
         methods=["POST"]
-    ),
-
-    Route(
-        "/google/callback",
-        google_callback_route,
-        methods=["GET"]
     ),
 
 ])
