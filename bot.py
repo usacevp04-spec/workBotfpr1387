@@ -1,9 +1,9 @@
 import os
-import asyncio
 import re
 import html
-import secrets
 import hashlib
+import secrets
+import asyncio
 
 import requests
 import uvicorn
@@ -11,20 +11,13 @@ import uvicorn
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import PlainTextResponse
-from starlette.routing import Route
 
-from telegram import (
-    Update,
-    InlineKeyboardButton,
-    InlineKeyboardMarkup,
-)
-
+from telegram import Update
 from telegram.ext import (
     Application,
     CommandHandler,
-    ContextTypes,
     MessageHandler,
-    CallbackQueryHandler,
+    ContextTypes,
     filters,
 )
 
@@ -36,37 +29,41 @@ from supabase import create_client
 # ============================================================
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-RENDER_URL = os.getenv("RENDER_URL")
+RENDER_URL = os.getenv("RENDER_URL", "").rstrip("/")
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
 
-OWNER_ID = int(os.getenv("OWNER_ID", "0"))
+OWNER_ID = os.getenv("OWNER_ID")
 
 PORT = int(os.getenv("PORT", "10000"))
 
-MAX_MESSAGE_LENGTH = 3900
-MAX_INPUT_MESSAGES = 50
-MAX_INPUT_LENGTH = 100000
-
 SKYSMART_API = "https://skysmart-answers.vercel.app/get_answers/"
+
+MAX_MESSAGE_LENGTH = 3900
 
 
 # ============================================================
-# ПРОВЕРКА ENV
+# ПРОВЕРКА НАСТРОЕК
 # ============================================================
 
 if not BOT_TOKEN:
-    raise RuntimeError("BOT_TOKEN не найден")
+    raise RuntimeError("Не задан BOT_TOKEN")
 
 if not RENDER_URL:
-    print("WARNING: RENDER_URL не найден")
+    raise RuntimeError("Не задан RENDER_URL")
 
 if not SUPABASE_URL:
-    raise RuntimeError("SUPABASE_URL не найден")
+    raise RuntimeError("Не задан SUPABASE_URL")
 
 if not SUPABASE_SERVICE_KEY:
-    raise RuntimeError("SUPABASE_SERVICE_KEY не найден")
+    raise RuntimeError("Не задан SUPABASE_SERVICE_KEY")
+
+if not OWNER_ID:
+    raise RuntimeError("Не задан OWNER_ID")
+
+
+OWNER_ID = int(OWNER_ID)
 
 
 # ============================================================
@@ -80,21 +77,15 @@ supabase = create_client(
 
 
 # ============================================================
-# ПАМЯТЬ БОТА
+# TELEGRAM APPLICATION
 # ============================================================
 
-# Сообщения, которые пользователь отправляет
-# до нажатия "Завершить ввод"
-user_buffers = {}
-
-# ID последнего сообщения с кнопкой "Завершить ввод"
-user_last_control_message = {}
-
-# Последние обычные задания пользователя
-user_last_texts = {}
-
-# Последние данные Skysmart пользователя
-user_last_skysmart_data = {}
+application = (
+    Application.builder()
+    .token(BOT_TOKEN)
+    .updater(None)
+    .build()
+)
 
 
 # ============================================================
@@ -108,6 +99,11 @@ def hash_password(password: str) -> str:
 
 
 def generate_password() -> str:
+    """
+    Формат:
+
+    XXXX-XXXX
+    """
 
     alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 
@@ -125,9 +121,12 @@ def generate_password() -> str:
 
 
 def initialize_passwords():
+    """
+    Создаёт пароли до тех пор,
+    пока свободных не станет 10.
+    """
 
     try:
-
         result = (
             supabase
             .table("bot_passwords")
@@ -136,42 +135,69 @@ def initialize_passwords():
             .execute()
         )
 
-        existing = len(
-            result.data or []
-        )
+        current_count = len(result.data or [])
 
-        needed = max(
-            0,
-            10 - existing
-        )
-
-        for _ in range(needed):
+        while current_count < 10:
 
             password = generate_password()
 
-            supabase.table(
-                "bot_passwords"
-            ).insert({
-                "password_hash": hash_password(password),
+            password_hash = hash_password(password)
+
+            # Защита от случайного совпадения
+            existing = (
+                supabase
+                .table("bot_passwords")
+                .select("id")
+                .eq("password_hash", password_hash)
+                .execute()
+            )
+
+            if existing.data:
+                continue
+
+            supabase.table("bot_passwords").insert({
+                "password_hash": password_hash,
                 "password_text": password,
-                "used": False
+                "used": False,
+                "used_by": None,
+                "used_at": None,
             }).execute()
 
-        print(
-            f"Пароли: свободных {existing + needed}"
+            current_count += 1
+
+        print(f"Пароли: свободных {current_count}")
+
+    except Exception as e:
+        print(f"Ошибка создания паролей: {e}")
+
+
+# ============================================================
+# ПОЛЬЗОВАТЕЛИ
+# ============================================================
+
+def is_authorized(user_id: int) -> bool:
+
+    try:
+        result = (
+            supabase
+            .table("bot_users")
+            .select("authorized")
+            .eq("telegram_id", user_id)
+            .limit(1)
+            .execute()
         )
+
+        if not result.data:
+            return False
+
+        return bool(result.data[0].get("authorized"))
 
     except Exception as e:
 
-        print(
-            "Ошибка initialize_passwords:",
-            e
-        )
+        print(f"Ошибка проверки пользователя: {e}")
 
+        return False
 
-# ============================================================
-# АВТОРИЗАЦИЯ
-# ============================================================
 
 def create_user_if_needed(user_id: int):
 
@@ -182,66 +208,30 @@ def create_user_if_needed(user_id: int):
             .table("bot_users")
             .select("telegram_id")
             .eq("telegram_id", user_id)
+            .limit(1)
             .execute()
         )
 
         if not result.data:
 
-            supabase.table(
-                "bot_users"
-            ).insert({
+            supabase.table("bot_users").insert({
                 "telegram_id": user_id,
-                "authorized": False
+                "authorized": False,
             }).execute()
 
     except Exception as e:
 
-        print(
-            "Ошибка create_user_if_needed:",
-            e
-        )
-
-
-def is_authorized(user_id: int) -> bool:
-
-    try:
-
-        result = (
-            supabase
-            .table("bot_users")
-            .select("authorized")
-            .eq("telegram_id", user_id)
-            .execute()
-        )
-
-        if not result.data:
-            return False
-
-        return bool(
-            result.data[0].get(
-                "authorized",
-                False
-            )
-        )
-
-    except Exception as e:
-
-        print(
-            "Ошибка is_authorized:",
-            e
-        )
-
-        return False
+        print(f"Ошибка создания пользователя: {e}")
 
 
 def use_password(
-    user_id: int,
-    password: str
+    password: str,
+    user_id: int
 ) -> bool:
 
-    password_hash = hash_password(
-        password
-    )
+    password = password.strip().upper()
+
+    password_hash = hash_password(password)
 
     try:
 
@@ -251,160 +241,164 @@ def use_password(
             .select("*")
             .eq("password_hash", password_hash)
             .eq("used", False)
+            .limit(1)
             .execute()
         )
 
         if not result.data:
             return False
 
-        password_id = result.data[0]["id"]
+        password_row = result.data[0]
 
-        (
-            supabase
-            .table("bot_passwords")
-            .update({
-                "used": True,
-                "used_by": user_id,
-                "used_at": "now()"
-            })
-            .eq("id", password_id)
-            .execute()
-        )
+        # Используем пароль
+        supabase.table("bot_passwords").update({
+            "used": True,
+            "used_by": user_id,
+        }).eq(
+            "id",
+            password_row["id"]
+        ).execute()
 
-        (
-            supabase
-            .table("bot_users")
-            .update({
-                "authorized": True
-            })
-            .eq("telegram_id", user_id)
-            .execute()
-        )
+        # Авторизуем пользователя
+        supabase.table("bot_users").update({
+            "authorized": True,
+        }).eq(
+            "telegram_id",
+            user_id
+        ).execute()
 
         return True
 
     except Exception as e:
 
-        print(
-            "Ошибка use_password:",
-            e
-        )
+        print(f"Ошибка использования пароля: {e}")
 
         return False
 
 
 # ============================================================
-# КНОПКИ
+# /START
 # ============================================================
 
-def finish_keyboard():
-
-    return InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton(
-                "⏹ Завершить ввод",
-                callback_data="finish_input"
-            )
-        ]
-    ])
-
-
-def result_keyboard():
-
-    return InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton(
-                "📱 Удобно",
-                callback_data="format_mobile"
-            ),
-            InlineKeyboardButton(
-                "📝 Список",
-                callback_data="format_list"
-            )
-        ],
-        [
-            InlineKeyboardButton(
-                "⚡ Только ответы",
-                callback_data="format_compact"
-            ),
-            InlineKeyboardButton(
-                "🔄 Заново",
-                callback_data="format_repeat"
-            )
-        ]
-    ])
-
-
-# ============================================================
-# РАЗБИВКА ДЛИННЫХ СООБЩЕНИЙ
-# ============================================================
-
-def split_by_telegram_messages(
-    text: str,
-    limit: int = MAX_MESSAGE_LENGTH
+async def start_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
 ):
 
-    if not text:
-        return [""]
+    if not update.effective_user:
+        return
 
-    chunks = []
+    user_id = update.effective_user.id
 
-    while len(text) > limit:
+    create_user_if_needed(user_id)
 
-        cut = text.rfind(
-            "\n",
-            0,
-            limit
+    if is_authorized(user_id):
+
+        await update.message.reply_text(
+            "✅ Вы уже авторизованы.\n\n"
+            "Отправьте ссылку на тест Skysmart."
         )
 
-        if cut <= 0:
-            cut = limit
+        return
 
-        chunks.append(
-            text[:cut]
-        )
-
-        text = text[cut:].lstrip()
-
-    if text:
-        chunks.append(text)
-
-    return chunks
-
-
-async def send_long_message(
-    message,
-    text: str,
-    reply_markup=None,
-    parse_mode=None
-):
-
-    chunks = split_by_telegram_messages(
-        text
+    await update.message.reply_text(
+        "🔐 Для использования бота нужен пароль.\n\n"
+        "Введите пароль:"
     )
 
-    for index, chunk in enumerate(chunks):
 
-        await message.reply_text(
-            chunk,
-            parse_mode=parse_mode,
-            reply_markup=(
-                reply_markup
-                if index == len(chunks) - 1
-                else None
-            ),
-            disable_web_page_preview=True
+# ============================================================
+# /ID
+# ============================================================
+
+async def id_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    if not update.effective_user:
+        return
+
+    await update.message.reply_text(
+        f"Ваш Telegram ID:\n"
+        f"`{update.effective_user.id}`",
+        parse_mode="Markdown"
+    )
+
+
+# ============================================================
+# /KEYS
+# ============================================================
+
+async def keys_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    if not update.effective_user:
+        return
+
+    user_id = update.effective_user.id
+
+    if user_id != OWNER_ID:
+
+        await update.message.reply_text(
+            "⛔ У вас нет доступа."
+        )
+
+        return
+
+    try:
+
+        result = (
+            supabase
+            .table("bot_passwords")
+            .select("*")
+            .eq("used", False)
+            .order("id")
+            .execute()
+        )
+
+        passwords = result.data or []
+
+        if not passwords:
+
+            await update.message.reply_text(
+                "Свободных паролей нет."
+            )
+
+            return
+
+        text = "🔑 Свободные пароли:\n\n"
+
+        for index, row in enumerate(passwords, 1):
+
+            text += (
+                f"{index}. `{row['password_text']}`\n"
+            )
+
+        await update.message.reply_text(
+            text,
+            parse_mode="Markdown"
+        )
+
+    except Exception as e:
+
+        print(f"Ошибка /keys: {e}")
+
+        await update.message.reply_text(
+            "❌ Не удалось получить список паролей."
         )
 
 
 # ============================================================
-# LATEX → НОРМАЛЬНЫЙ ТЕКСТ
+# LATEX → ЧИТАЕМЫЙ ВИД
 # ============================================================
 
 def latex_to_readable(text: str) -> str:
 
     if not text:
-        return ""
+        return text
 
     # HTML entities
     text = (
@@ -414,11 +408,9 @@ def latex_to_readable(text: str) -> str:
         .replace("&ge;", "≥")
         .replace("&le;", "≤")
         .replace("&amp;", "&")
-        .replace("&quot;", '"')
-        .replace("&#39;", "'")
     )
 
-    # gt / lt / ge / le
+    # Backslash-варианты
     text = re.sub(
         r"\\\s*gt\b",
         ">",
@@ -454,6 +446,7 @@ def latex_to_readable(text: str) -> str:
         flags=re.IGNORECASE
     )
 
+    # Plain-варианты
     text = re.sub(
         r"\bgt\b",
         ">",
@@ -489,175 +482,70 @@ def latex_to_readable(text: str) -> str:
         flags=re.IGNORECASE
     )
 
-    # ========================================================
-    # ДРОБИ
-    # ========================================================
+    # Дроби
+    def replace_frac(match):
 
-    def fraction(match):
-
-        numerator = match.group(1).strip()
-        denominator = match.group(2).strip()
+        numerator = match.group(1)
+        denominator = match.group(2)
 
         return f"({numerator}/{denominator})"
 
-    for _ in range(5):
-
-        new_text = re.sub(
-            r"\\(?:dfrac|tfrac|frac)"
-            r"\{([^{}]*)\}"
-            r"\{([^{}]*)\}",
-            fraction,
-            text
-        )
-
-        if new_text == text:
-            break
-
-        text = new_text
-
-    # ========================================================
-    # КОРНИ
-    # ========================================================
-
     text = re.sub(
-        r"\\sqrt\{([^{}]*)\}",
-        r"√(\1)",
+        r"\\(?:dfrac|tfrac|frac)\s*"
+        r"\{([^{}]*)\}\s*"
+        r"\{([^{}]*)\}",
+        replace_frac,
         text
     )
 
-    # ========================================================
-    # СТЕПЕНИ
-    # ========================================================
+    # Корень
+    def replace_sqrt(match):
 
-    superscripts = {
-        "0": "⁰",
-        "1": "¹",
-        "2": "²",
-        "3": "³",
-        "4": "⁴",
-        "5": "⁵",
-        "6": "⁶",
-        "7": "⁷",
-        "8": "⁸",
-        "9": "⁹",
-        "+": "⁺",
-        "-": "⁻",
-        "=": "⁼",
-        "(": "⁽",
-        ")": "⁾",
-        "n": "ⁿ",
-        "i": "ⁱ",
-    }
+        content = match.group(1)
 
-    def superscript(match):
+        return f"√({content})"
 
-        value = match.group(1)
+    text = re.sub(
+        r"\\sqrt\s*\{([^{}]*)\}",
+        replace_sqrt,
+        text
+    )
 
-        return "".join(
-            superscripts.get(
-                char,
-                char
+    # Степени
+    superscript_map = str.maketrans(
+        "0123456789+-=()nix",
+        "⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻⁼⁽⁾ⁿⁱˣ"
+    )
+
+    def replace_power(match):
+
+        content = match.group(1)
+
+        if all(
+            char in "0123456789+-=()nix"
+            for char in content
+        ):
+            return content.translate(
+                superscript_map
             )
-            for char in value
-        )
+
+        return f"^({content})"
 
     text = re.sub(
-        r"\^\{([^{}]+)\}",
-        superscript,
+        r"\^\s*\{([^{}]*)\}",
+        replace_power,
         text
     )
 
-    text = re.sub(
-        r"\^([A-Za-z0-9])",
-        lambda m: superscripts.get(
-            m.group(1),
-            m.group(1)
-        ),
-        text
-    )
-
-    # ========================================================
-    # ИНДЕКСЫ
-    # ========================================================
-
-    subscripts = {
-        "0": "₀",
-        "1": "₁",
-        "2": "₂",
-        "3": "₃",
-        "4": "₄",
-        "5": "₅",
-        "6": "₆",
-        "7": "₇",
-        "8": "₈",
-        "9": "₉",
-        "a": "ₐ",
-        "e": "ₑ",
-        "h": "ₕ",
-        "i": "ᵢ",
-        "j": "ⱼ",
-        "k": "ₖ",
-        "l": "ₗ",
-        "m": "ₘ",
-        "n": "ₙ",
-        "o": "ₒ",
-        "p": "ₚ",
-        "r": "ᵣ",
-        "s": "ₛ",
-        "t": "ₜ",
-        "u": "ᵤ",
-        "v": "ᵥ",
-        "x": "ₓ",
-    }
-
-    def subscript(match):
-
-        value = match.group(1)
-
-        return "".join(
-            subscripts.get(
-                char,
-                char
-            )
-            for char in value
-        )
-
-    text = re.sub(
-        r"_\{([^{}]+)\}",
-        subscript,
-        text
-    )
-
-    text = re.sub(
-        r"_([A-Za-z0-9])",
-        lambda m: subscripts.get(
-            m.group(1),
-            m.group(1)
-        ),
-        text
-    )
-
-    # ========================================================
-    # СИМВОЛЫ
-    # ========================================================
-
+    # Символы
     replacements = {
-
         r"\mathbb{R}": "ℝ",
-        r"\mathbb{N}": "ℕ",
-        r"\mathbb{Z}": "ℤ",
-        r"\mathbb{Q}": "ℚ",
-
+        r"\mathbb R": "ℝ",
         r"\R": "ℝ",
-        r"\N": "ℕ",
-        r"\Z": "ℤ",
-        r"\Q": "ℚ",
-
         r"\infty": "∞",
 
         r"\leq": "≤",
         r"\le": "≤",
-
         r"\geq": "≥",
         r"\ge": "≥",
 
@@ -677,131 +565,70 @@ def latex_to_readable(text: str) -> str:
         r"\subset": "⊂",
         r"\subseteq": "⊆",
 
-        r"\supset": "⊃",
-        r"\supseteq": "⊇",
-
         r"\cup": "∪",
         r"\cap": "∩",
-
-        r"\emptyset": "∅",
 
         r"\rightarrow": "→",
         r"\to": "→",
         r"\leftarrow": "←",
 
         r"\Rightarrow": "⇒",
-        r"\Leftarrow": "⇐",
-
-        r"\leftrightarrow": "↔",
+        r"\Leftrightarrow": "⇔",
 
         r"\approx": "≈",
         r"\sim": "∼",
-
-        r"\angle": "∠",
-        r"\triangle": "△",
-
-        r"\degree": "°",
-
-        r"\alpha": "α",
-        r"\beta": "β",
-        r"\gamma": "γ",
-        r"\delta": "δ",
-        r"\epsilon": "ε",
-        r"\theta": "θ",
-        r"\lambda": "λ",
-        r"\mu": "μ",
-        r"\pi": "π",
-        r"\sigma": "σ",
-        r"\phi": "φ",
-        r"\omega": "ω",
     }
 
     for old, new in replacements.items():
-        text = text.replace(
-            old,
-            new
-        )
+        text = text.replace(old, new)
 
-    # ========================================================
-    # \text{} и подобные
-    # ========================================================
-
-    text = re.sub(
-        r"\\text\{([^{}]*)\}",
-        r"\1",
-        text
-    )
-
-    text = re.sub(
-        r"\\mathrm\{([^{}]*)\}",
-        r"\1",
-        text
-    )
-
-    text = re.sub(
-        r"\\operatorname\{([^{}]*)\}",
-        r"\1",
-        text
-    )
-
-    # ========================================================
-    # \left \right и т.п.
-    # ========================================================
-
+    # Убираем визуальные LaTeX-команды
     text = re.sub(
         r"\\(?:Bigg|bigg|Big|big|left|right|middle)\b",
         "",
         text
     )
 
-    # ========================================================
-    # Пробелы LaTeX
-    # ========================================================
-
+    # Убираем spacing-команды
     text = re.sub(
         r"\\[,;:!]\s*",
-        " ",
-        text
-    )
-
-    text = re.sub(
-        r"\\quad\b",
-        " ",
-        text
-    )
-
-    text = re.sub(
-        r"\\qquad\b",
-        " ",
-        text
-    )
-
-    # ========================================================
-    # Остаточные команды
-    # ========================================================
-
-    text = re.sub(
-        r"\\[A-Za-z]+\b",
         "",
         text
     )
 
-    # ========================================================
-    # Скобки LaTeX
-    # ========================================================
-
-    text = text.replace(
-        "{",
-        ""
-    ).replace(
-        "}",
-        ""
+    # \text{...}
+    text = re.sub(
+        r"\\text\s*\{([^{}]*)\}",
+        r"\1",
+        text
     )
 
-    # ========================================================
-    # Убираем лишний slash перед знаками
-    # ========================================================
+    # \mathrm{...}
+    text = re.sub(
+        r"\\mathrm\s*\{([^{}]*)\}",
+        r"\1",
+        text
+    )
 
+    # \operatorname{...}
+    text = re.sub(
+        r"\\operatorname\s*\{([^{}]*)\}",
+        r"\1",
+        text
+    )
+
+    # Оставшиеся команды
+    text = re.sub(
+        r"\\[a-zA-Z]+\b",
+        "",
+        text
+    )
+
+    # Убираем лишние фигурные скобки
+    text = text.replace("{", "")
+    text = text.replace("}", "")
+
+    # Убираем обратный слеш перед настоящими символами
     text = re.sub(
         r"\\\s*(>)",
         r"\1",
@@ -832,10 +659,7 @@ def latex_to_readable(text: str) -> str:
         text
     )
 
-    # ========================================================
-    # Чистим пробелы
-    # ========================================================
-
+    # Пробелы
     text = re.sub(
         r"[ \t]+",
         " ",
@@ -851,1154 +675,432 @@ def latex_to_readable(text: str) -> str:
     return text.strip()
 
 
-def clean_skysmart_text(text) -> str:
+def clean_skysmart_text(value) -> str:
 
-    if text is None:
+    if value is None:
         return ""
 
-    text = str(text)
+    text = str(value)
 
-    text = html.unescape(
-        text
-    )
+    text = html.unescape(text)
 
-    return latex_to_readable(
-        text
-    )
+    text = latex_to_readable(text)
+
+    return text.strip()
 
 
 # ============================================================
-# ОБЫЧНЫЙ ПАРСЕР
+# SKYSMART URL
 # ============================================================
 
-def remove_choice_options(
-    question: str
-) -> str:
+def extract_room_name(text: str):
 
-    lines = question.splitlines()
-
-    result = []
-
-    option_pattern = re.compile(
-        r"^\s*(?:"
-        r"[A-HА-Я]\)"
-        r"|[A-HА-Я]\."
-        r"|[A-HА-Я]\s*[-–—]"
-        r"|\d+\)"
-        r"|\d+\."
-        r")\s+"
+    pattern = (
+        r"https?://edu\.skysmart\.ru/"
+        r"student/([^?\s]+)"
     )
-
-    for line in lines:
-
-        if option_pattern.match(line):
-            continue
-
-        result.append(line)
-
-    return "\n".join(
-        result
-    ).strip()
-
-
-def clean_question_text(
-    question: str
-) -> str:
-
-    if not question:
-        return ""
-
-    question = re.sub(
-        r"Получил сообщение.*",
-        "",
-        question,
-        flags=re.IGNORECASE
-    )
-
-    question = remove_choice_options(
-        question
-    )
-
-    return question.strip()
-
-
-def parse_questions(text: str):
-
-    text = text.replace(
-        "\r\n",
-        "\n"
-    )
-
-    text = text.replace(
-        "\r",
-        "\n"
-    )
-
-    text = re.sub(
-        r"Получил сообщение.*?(?=\n|$)",
-        "",
-        text,
-        flags=re.IGNORECASE
-    )
-
-    pattern = re.compile(
-        r"(?:Вопрос|Question)"
-        r"\s*(\d+)"
-        r"\s*:\s*"
-        r"(.*?)"
-        r"(?:"
-        r"\n\s*Ответ\s*:"
-        r"|"
-        r"\n\s*Answer\s*:"
-        r")"
-        r"\s*"
-        r"(.*?)"
-        r"(?="
-        r"\n\s*(?:Вопрос|Question)"
-        r"\s*\d+\s*:"
-        r"|$"
-        r")",
-        re.IGNORECASE | re.DOTALL
-    )
-
-    questions = []
-
-    for match in pattern.finditer(text):
-
-        number = match.group(1).strip()
-
-        question = match.group(2).strip()
-
-        answer = match.group(3).strip()
-
-        question = clean_question_text(
-            question
-        )
-
-        if not question and not answer:
-            continue
-
-        questions.append({
-            "number": number,
-            "question": question,
-            "answer": answer
-        })
-
-    return questions
-
-
-# ============================================================
-# ФОРМАТЫ ОБЫЧНЫХ ЗАДАНИЙ
-# ============================================================
-
-def make_mobile(questions):
-
-    parts = []
-
-    for item in questions:
-
-        number = html.escape(
-            str(item["number"])
-        )
-
-        question = html.escape(
-            item["question"]
-        )
-
-        answer = html.escape(
-            item["answer"]
-        )
-
-        parts.append(
-            f"<b>{number}. {question}</b>\n"
-            f"✅ {answer}"
-        )
-
-    return "\n\n".join(
-        parts
-    )
-
-
-def make_list(questions):
-
-    parts = []
-
-    for item in questions:
-
-        number = html.escape(
-            str(item["number"])
-        )
-
-        answer = html.escape(
-            item["answer"]
-        )
-
-        parts.append(
-            f"{number}. {answer}"
-        )
-
-    return "\n".join(
-        parts
-    )
-
-
-def make_compact(questions):
-
-    answers = []
-
-    for item in questions:
-
-        answer = item["answer"].strip()
-
-        if answer:
-            answers.append(
-                answer
-            )
-
-    # Обычный текст, БЕЗ HTML
-    return ", ".join(
-        answers
-    )
-
-
-# ============================================================
-# SKYSMART
-# ============================================================
-
-def extract_skysmart_room(
-    text: str
-):
-
-    if not text:
-        return None
 
     match = re.search(
-        r"https?://edu\.skysmart\.ru/student/"
-        r"([A-Za-z0-9_-]+)",
-        text
+        pattern,
+        text,
+        flags=re.IGNORECASE
     )
 
     if not match:
         return None
 
-    return match.group(1)
+    room = match.group(1)
+
+    # На случай ссылки с лишними символами
+    room = room.rstrip(".,!?)]}>")
+
+    return room
 
 
-async def get_skysmart_answers(
-    room_name: str
-):
+# ============================================================
+# SKYSMART API
+# ============================================================
 
-    def request():
+def get_skysmart_answers(room_name: str):
 
-        response = requests.post(
-            SKYSMART_API,
-            json={
-                "roomName": room_name
-            },
-            timeout=30
-        )
-
-        response.raise_for_status()
-
-        return response.json()
-
-    return await asyncio.to_thread(
-        request
+    response = requests.post(
+        SKYSMART_API,
+        json={
+            "roomName": room_name
+        },
+        timeout=30
     )
 
+    response.raise_for_status()
 
-def prepare_skysmart_tasks(
-    data
-):
+    return response.json()
 
-    tasks = []
 
-    if not isinstance(
-        data,
-        list
-    ):
-        return tasks
+# ============================================================
+# ФОРМАТИРОВАНИЕ SKYSMART
+# ============================================================
 
-    if len(data) == 0:
-        return tasks
+def get_task_number(task, index):
 
-    raw_tasks = data[0]
+    if not isinstance(task, dict):
+        return index
 
-    if not isinstance(
-        raw_tasks,
-        list
-    ):
-        return tasks
-
-    for index, task in enumerate(
-        raw_tasks,
-        start=1
+    for key in (
+        "number",
+        "task_number",
+        "taskNumber",
+        "id",
     ):
 
-        if not isinstance(
+        if key in task:
+
+            value = task[key]
+
+            if value is not None:
+                return value
+
+    return index
+
+
+def get_task_question(task):
+
+    if not isinstance(task, dict):
+        return ""
+
+    possible_keys = [
+        "question",
+        "question_text",
+        "questionText",
+        "text",
+        "title",
+        "condition",
+        "task",
+    ]
+
+    for key in possible_keys:
+
+        value = task.get(key)
+
+        if value not in (None, ""):
+
+            return clean_skysmart_text(value)
+
+    return ""
+
+
+def get_task_answer(task):
+
+    if not isinstance(task, dict):
+        return ""
+
+    possible_keys = [
+        "answer",
+        "answers",
+        "correct_answer",
+        "correctAnswer",
+        "result",
+        "solution",
+    ]
+
+    for key in possible_keys:
+
+        value = task.get(key)
+
+        if value not in (None, ""):
+
+            if isinstance(value, list):
+
+                return ", ".join(
+                    clean_skysmart_text(x)
+                    for x in value
+                )
+
+            if isinstance(value, dict):
+
+                return clean_skysmart_text(
+                    value.get("text")
+                    or value.get("value")
+                    or value
+                )
+
+            return clean_skysmart_text(value)
+
+    return ""
+
+
+def format_skysmart(data):
+
+    """
+    Основной формат результата.
+    """
+
+    if not isinstance(data, list):
+        return "❌ Неожиданный ответ от сервера."
+
+    if not data:
+        return "❌ Ответ пустой."
+
+    tasks = data[0]
+
+    if not isinstance(tasks, list):
+        return "❌ Не удалось получить список заданий."
+
+    lines = []
+
+    for index, task in enumerate(tasks, 1):
+
+        number = get_task_number(
             task,
-            dict
-        ):
+            index
+        )
+
+        question = get_task_question(task)
+        answer = get_task_answer(task)
+
+        if not question:
+            question = "—"
+
+        if not answer:
+            answer = "—"
+
+        lines.append(
+            f"<b>Задание {html.escape(str(number))}</b>\n"
+            f"❓ {html.escape(question)}\n"
+            f"✅ <b>Ответ:</b> {html.escape(answer)}"
+        )
+
+    return "\n\n".join(lines)
+
+
+# ============================================================
+# РАЗБИВКА ДЛИННОГО СООБЩЕНИЯ
+# ============================================================
+
+def split_message(
+    text: str,
+    max_length: int = MAX_MESSAGE_LENGTH
+):
+
+    if len(text) <= max_length:
+        return [text]
+
+    chunks = []
+
+    current = ""
+
+    blocks = text.split("\n\n")
+
+    for block in blocks:
+
+        if len(block) > max_length:
+
+            if current:
+                chunks.append(current)
+                current = ""
+
+            for i in range(
+                0,
+                len(block),
+                max_length
+            ):
+                chunks.append(
+                    block[i:i + max_length]
+                )
+
             continue
 
-        number = (
-            task.get("number")
-            or task.get("task_number")
-            or task.get("id")
-            or index
+        candidate = (
+            block
+            if not current
+            else current + "\n\n" + block
         )
 
-        question = (
-            task.get("question")
-            or task.get("text")
-            or task.get("task")
-            or ""
-        )
+        if len(candidate) <= max_length:
 
-        answer = (
-            task.get("answer")
-            or task.get("correct_answer")
-            or task.get("result")
-            or ""
-        )
+            current = candidate
 
-        question = clean_skysmart_text(
-            question
-        )
+        else:
 
-        answer = clean_skysmart_text(
-            answer
-        )
+            if current:
+                chunks.append(current)
 
-        if not question and not answer:
-            continue
+            current = block
 
-        tasks.append({
-            "number": str(number),
-            "question": question,
-            "answer": answer
-        })
+    if current:
+        chunks.append(current)
 
-    return tasks
+    return chunks
 
 
-def make_skysmart_mobile(
-    data
+async def send_long_message(
+    message,
+    text: str
 ):
 
-    tasks = prepare_skysmart_tasks(
-        data
-    )
+    chunks = split_message(text)
 
-    parts = []
+    for chunk in chunks:
 
-    for task in tasks:
-
-        number = html.escape(
-            task["number"]
+        await message.reply_text(
+            chunk,
+            parse_mode="HTML",
+            disable_web_page_preview=True
         )
 
-        question = html.escape(
-            task["question"]
-        )
 
-        answer = html.escape(
-            task["answer"]
-        )
+# ============================================================
+# ОБРАБОТКА СООБЩЕНИЙ
+# ============================================================
 
-        parts.append(
-            f"<b>{number}. {question}</b>\n"
-            f"✅ {answer}"
-        )
-
-    return "\n\n".join(
-        parts
-    )
-
-
-def make_skysmart_list(
-    data
+async def message_handler(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
 ):
 
-    tasks = prepare_skysmart_tasks(
-        data
-    )
+    if not update.effective_user:
+        return
 
-    parts = []
+    if not update.message:
+        return
 
-    for task in tasks:
+    user_id = update.effective_user.id
 
-        number = html.escape(
-            task["number"]
-        )
+    create_user_if_needed(user_id)
 
-        answer = html.escape(
-            task["answer"]
-        )
+    text = update.message.text or ""
 
-        parts.append(
-            f"{number}. {answer}"
-        )
+    text = text.strip()
 
-    return "\n".join(
-        parts
-    )
+    if not text:
+        return
 
+    # --------------------------------------------------------
+    # Если пользователь ещё не авторизован
+    # --------------------------------------------------------
 
-def make_skysmart_compact(
-    data
-):
+    if not is_authorized(user_id):
 
-    tasks = prepare_skysmart_tasks(
-        data
-    )
+        if use_password(text, user_id):
 
-    answers = []
-
-    for task in tasks:
-
-        answer = task["answer"].strip()
-
-        if answer:
-            answers.append(
-                answer
+            await update.message.reply_text(
+                "✅ Пароль принят!\n\n"
+                "Авторизация успешна.\n\n"
+                "Теперь отправьте ссылку на тест Skysmart."
             )
 
-    # БЕЗ HTML
-    return ", ".join(
-        answers
-    )
+        else:
 
+            await update.message.reply_text(
+                "❌ Неверный или уже использованный пароль."
+            )
 
-# ============================================================
-# /START
-# ============================================================
-
-async def start_command(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
-
-    if not update.message:
         return
 
-    user = update.effective_user
+    # --------------------------------------------------------
+    # Проверяем ссылку Skysmart
+    # --------------------------------------------------------
 
-    if not user:
-        return
+    room_name = extract_room_name(text)
 
-    user_id = user.id
-
-    create_user_if_needed(
-        user_id
-    )
-
-    if is_authorized(
-        user_id
-    ):
+    if not room_name:
 
         await update.message.reply_text(
-            "✅ Вы уже авторизованы.\n\n"
-            "Отправляйте задания или ссылку Skysmart."
+            "❗ Отправьте ссылку на тест Skysmart.\n\n"
+            "Пример:\n"
+            "https://edu.skysmart.ru/student/..."
         )
 
         return
 
-    await update.message.reply_text(
-        "🔐 Для использования бота нужен пароль.\n\n"
-        "Отправьте пароль сообщением."
+    # --------------------------------------------------------
+    # Получаем ответы
+    # --------------------------------------------------------
+
+    processing_message = await update.message.reply_text(
+        "⏳ Получаю задания и ответы..."
     )
-
-
-# ============================================================
-# /ID
-# ============================================================
-
-async def id_command(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
-
-    if not update.message:
-        return
-
-    user = update.effective_user
-
-    if not user:
-        return
-
-    await update.message.reply_text(
-        f"🆔 Ваш Telegram ID:\n\n"
-        f"<code>{user.id}</code>",
-        parse_mode="HTML"
-    )
-
-
-# ============================================================
-# /KEYS
-# ============================================================
-
-async def keys_command(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
-
-    if not update.message:
-        return
-
-    user = update.effective_user
-
-    if not user:
-        return
-
-    if user.id != OWNER_ID:
-
-        await update.message.reply_text(
-            "⛔ Недостаточно прав."
-        )
-
-        return
 
     try:
 
-        result = (
-            supabase
-            .table("bot_passwords")
-            .select(
-                "password_text, used, used_by, used_at"
-            )
-            .order("id")
-            .execute()
+        # requests блокирует event loop,
+        # поэтому выполняем запрос в отдельном потоке
+        data = await asyncio.to_thread(
+            get_skysmart_answers,
+            room_name
         )
 
-        rows = result.data or []
+        result = format_skysmart(data)
 
-        if not rows:
-
-            await update.message.reply_text(
-                "Паролей пока нет."
-            )
-
-            return
-
-        lines = [
-            "🔑 <b>Пароли:</b>",
-            ""
-        ]
-
-        for index, row in enumerate(
-            rows,
-            start=1
-        ):
-
-            password = html.escape(
-                str(
-                    row.get(
-                        "password_text",
-                        ""
-                    )
-                )
-            )
-
-            used = row.get(
-                "used",
-                False
-            )
-
-            status = (
-                "❌ использован"
-                if used
-                else "✅ свободен"
-            )
-
-            lines.append(
-                f"{index}. "
-                f"<code>{password}</code> — "
-                f"{status}"
-            )
+        await processing_message.delete()
 
         await send_long_message(
             update.message,
-            "\n".join(lines),
-            parse_mode="HTML"
+            result
+        )
+
+    except requests.Timeout:
+
+        await processing_message.edit_text(
+            "❌ Сервер Skysmart слишком долго отвечает.\n"
+            "Попробуйте ещё раз."
+        )
+
+    except requests.RequestException as e:
+
+        print(f"Skysmart HTTP error: {e}")
+
+        await processing_message.edit_text(
+            "❌ Не удалось получить ответы от Skysmart.\n"
+            "Попробуйте ещё раз."
         )
 
     except Exception as e:
 
-        print(
-            "Ошибка /keys:",
-            e
-        )
+        print(f"Skysmart error: {e}")
 
-        await update.message.reply_text(
-            "❌ Не удалось получить список ключей."
+        await processing_message.edit_text(
+            "❌ Произошла ошибка при обработке теста."
         )
 
 
 # ============================================================
-# АВТОРИЗАЦИЯ ПО ПАРОЛЮ
+# TELEGRAM HANDLERS
 # ============================================================
 
-async def try_authorize_with_password(
-    update: Update,
-    text: str
-):
-
-    user = update.effective_user
-
-    if not user:
-        return False
-
-    user_id = user.id
-
-    if is_authorized(
-        user_id
-    ):
-        return False
-
-    password = text.strip()
-
-    if not re.fullmatch(
-        r"[A-Za-z0-9]{4}-[A-Za-z0-9]{4}",
-        password
-    ):
-        return False
-
-    if use_password(
-        user_id,
-        password
-    ):
-
-        await update.message.reply_text(
-            "✅ Пароль принят!\n\n"
-            "Теперь бот готов к работе."
-        )
-
-        return True
-
-    await update.message.reply_text(
-        "❌ Неверный или уже использованный пароль."
+application.add_handler(
+    CommandHandler(
+        "start",
+        start_command
     )
+)
 
-    return True
+application.add_handler(
+    CommandHandler(
+        "id",
+        id_command
+    )
+)
+
+application.add_handler(
+    CommandHandler(
+        "keys",
+        keys_command
+    )
+)
+
+application.add_handler(
+    MessageHandler(
+        filters.TEXT & ~filters.COMMAND,
+        message_handler
+    )
+)
 
 
 # ============================================================
-# ОСНОВНОЙ ОБРАБОТЧИК ТЕКСТА
+# WEBHOOK
 # ============================================================
 
-async def text_message(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
-
-    if not update.message:
-        return
-
-    user = update.effective_user
-
-    if not user:
-        return
-
-    user_id = user.id
-
-    text = update.message.text or ""
-
-    if not text.strip():
-        return
-
-    create_user_if_needed(
-        user_id
-    )
-
-    # ========================================================
-    # АВТОРИЗАЦИЯ
-    # ========================================================
-
-    if not is_authorized(
-        user_id
-    ):
-
-        handled = await try_authorize_with_password(
-            update,
-            text
-        )
-
-        if handled:
-            return
-
-        await update.message.reply_text(
-            "🔐 Сначала отправьте пароль."
-        )
-
-        return
-
-    # ========================================================
-    # SKYSMART
-    # ========================================================
-
-    room_name = extract_skysmart_room(
-        text
-    )
-
-    if room_name:
-
-        await update.message.reply_text(
-            "⏳ Получаю ответы из Skysmart..."
-        )
-
-        try:
-
-            data = await get_skysmart_answers(
-                room_name
-            )
-
-            if not data:
-
-                await update.message.reply_text(
-                    "❌ Skysmart не вернул данные."
-                )
-
-                return
-
-            # Сохраняем Skysmart
-            user_last_skysmart_data[
-                user_id
-            ] = data
-
-            # Удаляем старые обычные задания
-            user_last_texts.pop(
-                user_id,
-                None
-            )
-
-            output = make_skysmart_mobile(
-                data
-            )
-
-            if not output:
-
-                await update.message.reply_text(
-                    "❌ Не удалось найти задания."
-                )
-
-                return
-
-            # Кнопки будут прикреплены
-            # к последнему сообщению результата
-            await send_long_message(
-                update.message,
-                output,
-                reply_markup=result_keyboard(),
-                parse_mode="HTML"
-            )
-
-        except Exception as e:
-
-            print(
-                "SKYSMART ERROR:",
-                repr(e)
-            )
-
-            await update.message.reply_text(
-                "❌ Ошибка при получении ответов Skysmart."
-            )
-
-        return
-
-    # ========================================================
-    # ОБЫЧНЫЕ ЗАДАНИЯ
-    # ========================================================
-
-    # Если пользователь перешёл к обычным заданиям,
-    # старые Skysmart-данные удаляем.
-    user_last_skysmart_data.pop(
-        user_id,
-        None
-    )
-
-    if user_id not in user_buffers:
-
-        user_buffers[user_id] = []
-
-    if len(
-        user_buffers[user_id]
-    ) >= MAX_INPUT_MESSAGES:
-
-        await update.message.reply_text(
-            "⚠️ Слишком много сообщений.\n"
-            "Нажмите «Завершить ввод»."
-        )
-
-        return
-
-    current_length = sum(
-        len(item)
-        for item in user_buffers[user_id]
-    )
-
-    if (
-        current_length + len(text)
-        > MAX_INPUT_LENGTH
-    ):
-
-        await update.message.reply_text(
-            "⚠️ Слишком большой объём текста."
-        )
-
-        return
-
-    user_buffers[
-        user_id
-    ].append(
-        text
-    )
-
-    # ========================================================
-    # УДАЛЯЕМ СТАРУЮ КНОПКУ "ЗАВЕРШИТЬ ВВОД"
-    # ========================================================
-
-    old_message_id = user_last_control_message.get(
-        user_id
-    )
-
-    if old_message_id:
-
-        try:
-
-            await context.bot.edit_message_reply_markup(
-                chat_id=user_id,
-                message_id=old_message_id,
-                reply_markup=None
-            )
-
-        except Exception:
-            pass
-
-    # ========================================================
-    # НОВАЯ КНОПКА
-    # ========================================================
-
-    control_message = await update.message.reply_text(
-        "Нажмите, когда закончите ввод:",
-        reply_markup=finish_keyboard()
-    )
-
-    user_last_control_message[
-        user_id
-    ] = control_message.message_id
-
-
-# ============================================================
-# ЗАВЕРШИТЬ ВВОД
-# ============================================================
-
-async def finish_input(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
-
-    query = update.callback_query
-
-    if not query:
-        return
-
-    await query.answer()
-
-    user = query.from_user
-
-    if not user:
-        return
-
-    user_id = user.id
-
-    messages = user_buffers.get(
-        user_id,
-        []
-    )
-
-    if not messages:
-
-        await query.message.reply_text(
-            "⚠️ Нет введённых данных."
-        )
-
-        return
-
-    full_text = "\n".join(
-        messages
-    )
-
-    questions = parse_questions(
-        full_text
-    )
-
-    if not questions:
-
-        await query.message.reply_text(
-            "❌ Не удалось найти задания.\n\n"
-            "Пример:\n"
-            "Вопрос 1: Текст задания\n"
-            "Ответ: правильный ответ"
-        )
-
-        return
-
-    # Сохраняем обычные задания
-    user_last_texts[
-        user_id
-    ] = questions
-
-    # Удаляем старый Skysmart
-    user_last_skysmart_data.pop(
-        user_id,
-        None
-    )
-
-    # Очищаем входной буфер
-    user_buffers.pop(
-        user_id,
-        None
-    )
-
-    user_last_control_message.pop(
-        user_id,
-        None
-    )
-
-    # Убираем старую кнопку
-    try:
-
-        await query.edit_message_reply_markup(
-            reply_markup=None
-        )
-
-    except Exception:
-        pass
-
-    output = make_mobile(
-        questions
-    )
-
-    # Первый результат
-    await send_long_message(
-        query.message,
-        output,
-        reply_markup=result_keyboard(),
-        parse_mode="HTML"
-    )
-
-
-# ============================================================
-# КНОПКИ ФОРМАТА
-# ============================================================
-
-async def result_callback(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
-
-    query = update.callback_query
-
-    if not query:
-        return
-
-    await query.answer()
-
-    user = query.from_user
-
-    if not user:
-        return
-
-    user_id = user.id
-
-    callback = query.data
-
-    # ========================================================
-    # СРАЗУ УДАЛЯЕМ СТАРЫЕ КНОПКИ
-    # ========================================================
-
-    try:
-
-        await query.edit_message_reply_markup(
-            reply_markup=None
-        )
-
-    except Exception:
-        pass
-
-    # ========================================================
-    # SKYSMART
-    # ========================================================
-
-    if user_id in user_last_skysmart_data:
-
-        data = user_last_skysmart_data[
-            user_id
-        ]
-
-        if callback == "format_mobile":
-
-            output = make_skysmart_mobile(
-                data
-            )
-
-            parse_mode = "HTML"
-
-        elif callback == "format_list":
-
-            output = make_skysmart_list(
-                data
-            )
-
-            parse_mode = "HTML"
-
-        elif callback == "format_compact":
-
-            output = make_skysmart_compact(
-                data
-            )
-
-            # ВАЖНО:
-            # Только ответы отправляем
-            # БЕЗ HTML.
-            parse_mode = None
-
-        elif callback == "format_repeat":
-
-            output = make_skysmart_mobile(
-                data
-            )
-
-            parse_mode = "HTML"
-
-        else:
-            return
-
-        if not output:
-
-            await query.message.reply_text(
-                "⚠️ Формат получился пустым."
-            )
-
-            return
-
-        # Новый результат
-        await send_long_message(
-            query.message,
-            output,
-            parse_mode=parse_mode
-        )
-
-        # ====================================================
-        # НОВЫЕ КНОПКИ ВНИЗУ ЧАТА
-        # ====================================================
-
-        await query.message.reply_text(
-            "Выберите формат:",
-            reply_markup=result_keyboard()
-        )
-
-        return
-
-    # ========================================================
-    # ОБЫЧНЫЕ ЗАДАНИЯ
-    # ========================================================
-
-    questions = user_last_texts.get(
-        user_id,
-        []
-    )
-
-    if not questions:
-
-        await query.message.reply_text(
-            "⚠️ Данные для форматирования не найдены."
-        )
-
-        return
-
-    if callback == "format_mobile":
-
-        output = make_mobile(
-            questions
-        )
-
-        parse_mode = "HTML"
-
-    elif callback == "format_list":
-
-        output = make_list(
-            questions
-        )
-
-        parse_mode = "HTML"
-
-    elif callback == "format_compact":
-
-        output = make_compact(
-            questions
-        )
-
-        # БЕЗ HTML
-        parse_mode = None
-
-    elif callback == "format_repeat":
-
-        output = make_mobile(
-            questions
-        )
-
-        parse_mode = "HTML"
-
-    else:
-        return
-
-    if not output:
-
-        await query.message.reply_text(
-            "⚠️ Формат получился пустым."
-        )
-
-        return
-
-    # Новый результат
-    await send_long_message(
-        query.message,
-        output,
-        parse_mode=parse_mode
-    )
-
-    # ========================================================
-    # НОВЫЕ КНОПКИ В САМОМ НИЗУ
-    # ========================================================
-
-    await query.message.reply_text(
-        "Выберите формат:",
-        reply_markup=result_keyboard()
-    )
-
-
-# ============================================================
-# WEB ROUTES
-# ============================================================
-
-async def home(
-    request: Request
-):
-
-    return PlainTextResponse(
-        "Bot is running"
-    )
-
-
-async def health(
-    request: Request
-):
-
-    return PlainTextResponse(
-        "OK"
-    )
+WEBHOOK_PATH = "/telegram"
 
 
 async def telegram_webhook(
@@ -2025,8 +1127,7 @@ async def telegram_webhook(
     except Exception as e:
 
         print(
-            "WEBHOOK ERROR:",
-            repr(e)
+            f"Ошибка Telegram webhook: {e}"
         )
 
         return PlainTextResponse(
@@ -2036,63 +1137,25 @@ async def telegram_webhook(
 
 
 # ============================================================
-# TELEGRAM APPLICATION
+# STARLETTE
 # ============================================================
 
-application = (
-    Application
-    .builder()
-    .token(BOT_TOKEN)
-    .updater(None)
-    .build()
-)
+async def homepage(
+    request: Request
+):
 
-
-# ============================================================
-# HANDLERS
-# ============================================================
-
-application.add_handler(
-    CommandHandler(
-        "start",
-        start_command
+    return PlainTextResponse(
+        "Telegram bot is running."
     )
-)
 
-application.add_handler(
-    CommandHandler(
-        "id",
-        id_command
-    )
-)
 
-application.add_handler(
-    CommandHandler(
-        "keys",
-        keys_command
-    )
-)
+async def health(
+    request: Request
+):
 
-application.add_handler(
-    CallbackQueryHandler(
-        finish_input,
-        pattern=r"^finish_input$"
+    return PlainTextResponse(
+        "OK"
     )
-)
-
-application.add_handler(
-    CallbackQueryHandler(
-        result_callback,
-        pattern=r"^format_(mobile|list|compact|repeat)$"
-    )
-)
-
-application.add_handler(
-    MessageHandler(
-        filters.TEXT & ~filters.COMMAND,
-        text_message
-    )
-)
 
 
 # ============================================================
@@ -2101,122 +1164,95 @@ application.add_handler(
 
 async def startup():
 
-    print(
-        "========================================"
-    )
-
-    print(
-        "Запуск Telegram бота..."
-    )
-
-    print(
-        "========================================"
-    )
-
-    # Запускаем Telegram Application
-    await application.initialize()
-
-    await application.start()
-
-    # Создаём недостающие пароли
-    initialize_passwords()
-
-    if not RENDER_URL:
-
-        print(
-            "WARNING: RENDER_URL не установлен!"
-        )
-
-        return
-
-    webhook_url = (
-        RENDER_URL.rstrip("/")
-        + "/telegram"
-    )
+    print()
+    print("========================================")
+    print("Запуск Telegram бота...")
+    print("========================================")
 
     try:
+
+        initialize_passwords()
+
+        await application.initialize()
+
+        await application.start()
+
+        webhook_url = (
+            RENDER_URL +
+            WEBHOOK_PATH
+        )
 
         await application.bot.set_webhook(
             url=webhook_url
         )
 
         print(
-            "Webhook установлен:"
+            f"Webhook установлен:\n"
+            f"{webhook_url}"
         )
 
-        print(
-            webhook_url
-        )
+        print("Бот успешно запущен!")
 
     except Exception as e:
 
         print(
-            "Ошибка установки webhook:",
-            repr(e)
+            f"ОШИБКА ЗАПУСКА БОТА: {e}"
         )
 
-    print(
-        "Бот успешно запущен!"
-    )
+        raise
 
 
 async def shutdown():
 
     print(
-        "Остановка бота..."
+        "Остановка Telegram бота..."
     )
-
-    try:
-
-        await application.bot.delete_webhook()
-
-    except Exception:
-        pass
 
     try:
 
         await application.stop()
 
-    except Exception:
-        pass
-
-    try:
-
         await application.shutdown()
 
-    except Exception:
-        pass
+    except Exception as e:
 
+        print(
+            f"Ошибка остановки: {e}"
+        )
 
-# ============================================================
-# STARLETTE
-# ============================================================
 
 app = Starlette(
-    routes=[
-        Route(
-            "/",
-            home,
-            methods=["GET"]
-        ),
-        Route(
-            "/health",
-            health,
-            methods=["GET"]
-        ),
-        Route(
-            "/telegram",
-            telegram_webhook,
-            methods=["POST"]
-        ),
-    ],
-    on_startup=[
-        startup
-    ],
-    on_shutdown=[
-        shutdown
-    ]
+    routes=[],
+    on_startup=[startup],
+    on_shutdown=[shutdown]
 )
+
+
+# ============================================================
+# ROUTES
+# ============================================================
+
+from starlette.routing import Route
+
+app.router.routes.extend([
+    Route(
+        "/",
+        homepage,
+        methods=["GET", "HEAD"]
+    ),
+
+    Route(
+        "/health",
+        health,
+        methods=["GET"]
+    ),
+
+    Route(
+        "/telegram",
+        telegram_webhook,
+        methods=["POST"]
+    ),
+])
 
 
 # ============================================================
