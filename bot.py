@@ -3,7 +3,6 @@ import re
 import hashlib
 import secrets
 import asyncio
-import json
 import logging
 
 import requests
@@ -49,6 +48,30 @@ MAX_MESSAGE_LENGTH = 3900
 
 
 # ============================================================
+# ПРОВЕРКА ENV
+# ============================================================
+
+required_env = {
+    "BOT_TOKEN": BOT_TOKEN,
+    "RENDER_URL": RENDER_URL,
+    "SUPABASE_URL": SUPABASE_URL,
+    "SUPABASE_SERVICE_KEY": SUPABASE_SERVICE_KEY,
+}
+
+missing_env = [
+    name
+    for name, value in required_env.items()
+    if not value
+]
+
+if missing_env:
+    raise RuntimeError(
+        "Не заданы переменные окружения: "
+        + ", ".join(missing_env)
+    )
+
+
+# ============================================================
 # ЛОГИ
 # ============================================================
 
@@ -71,7 +94,7 @@ supabase: Client = create_client(
 
 
 # ============================================================
-# TELEGRAM APPLICATION
+# TELEGRAM
 # ============================================================
 
 application = (
@@ -91,10 +114,6 @@ PASSWORD_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 
 
 def generate_password():
-    """
-    Генерирует пароль вида XXXX-XXXX.
-    """
-
     part1 = "".join(
         secrets.choice(PASSWORD_ALPHABET)
         for _ in range(4)
@@ -115,10 +134,6 @@ def hash_password(password):
 
 
 def initialize_passwords():
-    """
-    Поддерживает минимум 10 свободных паролей.
-    """
-
     result = (
         supabase
         .table("bot_passwords")
@@ -137,7 +152,10 @@ def initialize_passwords():
             supabase
             .table("bot_passwords")
             .select("id")
-            .eq("password_hash", hash_password(password))
+            .eq(
+                "password_hash",
+                hash_password(password)
+            )
             .execute()
         )
 
@@ -156,9 +174,6 @@ def initialize_passwords():
 
 
 def create_user_if_needed(telegram_id):
-    """
-    Создаёт пользователя в bot_users, если его ещё нет.
-    """
 
     result = (
         supabase
@@ -169,6 +184,7 @@ def create_user_if_needed(telegram_id):
     )
 
     if not result.data:
+
         supabase.table("bot_users").insert({
             "telegram_id": telegram_id,
             "authorized": False,
@@ -176,9 +192,6 @@ def create_user_if_needed(telegram_id):
 
 
 def is_authorized(telegram_id):
-    """
-    Проверяет авторизацию пользователя.
-    """
 
     result = (
         supabase
@@ -191,15 +204,16 @@ def is_authorized(telegram_id):
     if not result.data:
         return False
 
-    return bool(result.data[0].get("authorized", False))
+    return bool(
+        result.data[0].get("authorized", False)
+    )
 
 
 def use_password(password, telegram_id):
-    """
-    Использует пароль и авторизует пользователя.
-    """
 
-    password_hash = hash_password(password.strip())
+    password_hash = hash_password(
+        password.strip()
+    )
 
     result = (
         supabase
@@ -216,7 +230,9 @@ def use_password(password, telegram_id):
 
     password_row = result.data[0]
 
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(
+        timezone.utc
+    ).isoformat()
 
     supabase.table("bot_passwords").update({
         "used": True,
@@ -236,9 +252,6 @@ def use_password(password, telegram_id):
 
 
 def get_unused_passwords():
-    """
-    Возвращает свободные пароли.
-    """
 
     result = (
         supabase
@@ -256,19 +269,10 @@ def get_unused_passwords():
 
 
 # ============================================================
-# SKYSМART
+# SKYSMART LINK
 # ============================================================
 
 def extract_room_name(text):
-    """
-    Извлекает room из ссылки:
-
-    https://edu.skysmart.ru/student/kavorubamu
-
-    Возвращает:
-
-    kavorubamu
-    """
 
     if not text:
         return None
@@ -281,142 +285,288 @@ def extract_room_name(text):
         re.IGNORECASE
     )
 
-    if match:
-        room = match.group(1)
+    if not match:
+        return None
 
-        # Убираем только пунктуацию,
-        # которая могла случайно оказаться после ссылки.
-        room = room.rstrip(".,;:!?)]}>\"'")
+    room = match.group(1)
 
-        return room
-
-    return None
-
-
-def get_skysmart_answers(room_name):
-    """
-    Получает данные от Skysmart API.
-    """
-
-    response = requests.post(
-        SKYSMART_API_URL,
-        json={
-            "roomName": room_name
-        },
-        timeout=30
+    room = room.rstrip(
+        ".,;:!?)]}>\"'"
     )
 
-    response.raise_for_status()
-
-    return response.json()
+    return room
 
 
 # ============================================================
-# ФОРМИРОВАНИЕ ALL_TASKS_ANSWERS
+# ЗАПРОС К SKYSMART API
+# ============================================================
+
+def get_skysmart_answers(room_name):
+
+    payload = {
+        "roomName": room_name
+    }
+
+    logger.info(
+        "========================================"
+    )
+
+    logger.info(
+        "Skysmart API request"
+    )
+
+    logger.info(
+        "roomName: %s",
+        room_name
+    )
+
+    logger.info(
+        "URL: %s",
+        SKYSMART_API_URL
+    )
+
+    try:
+
+        response = requests.post(
+            SKYSMART_API_URL,
+            json=payload,
+            headers={
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+                "User-Agent": "Mozilla/5.0"
+            },
+            timeout=30
+        )
+
+    except requests.Timeout:
+
+        logger.error(
+            "Skysmart API TIMEOUT"
+        )
+
+        raise
+
+    except requests.RequestException as e:
+
+        logger.error(
+            "Skysmart API connection error: %s",
+            e
+        )
+
+        raise
+
+    logger.info(
+        "Skysmart API HTTP status: %s",
+        response.status_code
+    )
+
+    logger.info(
+        "Skysmart API response:"
+    )
+
+    logger.info(
+        "%s",
+        response.text[:5000]
+    )
+
+    logger.info(
+        "========================================"
+    )
+
+    if not response.ok:
+
+        raise requests.HTTPError(
+            f"HTTP {response.status_code}: "
+            f"{response.text[:2000]}",
+            response=response
+        )
+
+    try:
+
+        return response.json()
+
+    except ValueError:
+
+        logger.error(
+            "Skysmart API returned invalid JSON"
+        )
+
+        raise ValueError(
+            "Skysmart API вернул не JSON"
+        )
+
+
+# ============================================================
+# СОЗДАНИЕ all_tasks_answers
 # ============================================================
 
 def build_all_tasks_answers(data):
+
     """
-    Преобразует ответ API в структуру:
+    Получает ответ API и создаёт:
 
     all_tasks_answers = [
-        ["ответ 1", "ответ 2", "ответ 3"],
-        ["ответ 1", "ответ 2"],
-        ["ответ 1", "ответ 2", "ответ 3"]
+        ["π/2", "πm", "πn"],
+        ["π/3", "πk", "2πn"],
+        ["5", "10", "15"]
     ]
 
-    То есть:
+    Каждое задание = отдельный список.
 
-    all_tasks_answers[0] -> ответы задания 1
-    all_tasks_answers[1] -> ответы задания 2
-    all_tasks_answers[2] -> ответы задания 3
-
-    ВАЖНО:
-
-    Содержимое ответов НЕ очищается.
-    HTML НЕ преобразуется.
-    LaTeX НЕ преобразуется.
-    Символы НЕ заменяются.
-    Строки не декодируются.
-
-    Берём answers непосредственно из API.
+    Содержимое строк ответов не очищается.
+    HTML/LaTeX не преобразуется.
     """
 
     if not isinstance(data, list):
-        raise ValueError("Некорректный ответ API: ожидался список.")
+
+        raise ValueError(
+            "API вернул не список."
+        )
 
     if len(data) == 0:
-        raise ValueError("API вернул пустой ответ.")
+
+        raise ValueError(
+            "API вернул пустой список."
+        )
 
     tasks = data[0]
 
     if not isinstance(tasks, list):
+
         raise ValueError(
-            "Некорректная структура API: data[0] должен быть списком заданий."
+            "data[0] не является списком заданий."
         )
 
     all_tasks_answers = []
 
-    for task in tasks:
+    for task_index, task in enumerate(tasks, start=1):
 
         if not isinstance(task, dict):
+
+            logger.warning(
+                "Задание %s имеет неожиданный тип: %s",
+                task_index,
+                type(task).__name__
+            )
+
+            all_tasks_answers.append([])
+
             continue
 
         # ----------------------------------------------------
-        # Основной вариант API:
-        #
-        # task["answers"] = [...]
+        # Основное поле API
         # ----------------------------------------------------
 
         answers = task.get("answers")
 
+        # ----------------------------------------------------
+        # Если answers отсутствует,
+        # проверяем альтернативные названия.
+        # ----------------------------------------------------
+
         if answers is None:
+
+            for key in (
+                "answer",
+                "correct_answer",
+                "correctAnswer",
+                "results",
+                "solution"
+            ):
+
+                if key in task:
+
+                    answers = task[key]
+
+                    logger.info(
+                        "Задание %s: использовано поле '%s'",
+                        task_index,
+                        key
+                    )
+
+                    break
+
+        # ----------------------------------------------------
+        # Ничего нет
+        # ----------------------------------------------------
+
+        if answers is None:
+
             answers = []
 
-        # Если API почему-то прислал одну строку,
-        # превращаем её в список из одного элемента.
-        #
-        # Сам текст при этом НЕ изменяем.
+        # ----------------------------------------------------
+        # Один строковый ответ
+        # ----------------------------------------------------
+
         if isinstance(answers, str):
-            answers = [answers]
+
+            answers = [
+                answers
+            ]
+
+        # ----------------------------------------------------
+        # Уже список
+        # ----------------------------------------------------
 
         elif isinstance(answers, list):
-            # Копируем список без изменения содержимого.
+
+            # Не изменяем содержимое.
             answers = list(answers)
 
-        else:
-            answers = [answers]
+        # ----------------------------------------------------
+        # Другой тип
+        # ----------------------------------------------------
 
-        all_tasks_answers.append(answers)
+        else:
+
+            answers = [
+                answers
+            ]
+
+        all_tasks_answers.append(
+            answers
+        )
+
+    logger.info(
+        "Получен all_tasks_answers: %s",
+        all_tasks_answers
+    )
 
     return all_tasks_answers
 
 
+# ============================================================
+# ФОРМАТ ВЫВОДА
+# ============================================================
+
 def format_all_tasks_answers(all_tasks_answers):
+
     """
-    Делает из структуры all_tasks_answers текст,
-    который можно отправить пользователю.
-
-    Используется repr(), чтобы Telegram получил именно
-    Python-подобный вид вложенных списков.
-
-    Например:
+    Вывод:
 
     [
         ['π/2', 'πm', 'πn'],
         ['π/3', 'πk'],
         ['5', '10', '15']
     ]
+
+    Если нужен именно JSON с двойными кавычками,
+    можно заменить repr() на json.dumps().
     """
 
-    return repr(all_tasks_answers)
+    return repr(
+        all_tasks_answers
+    )
 
 
 # ============================================================
-# РАЗБИВКА ДЛИННЫХ СООБЩЕНИЙ
+# ДЛИННЫЕ СООБЩЕНИЯ
 # ============================================================
 
-def split_message(text, max_length=MAX_MESSAGE_LENGTH):
+def split_message(
+    text,
+    max_length=MAX_MESSAGE_LENGTH
+):
 
     if len(text) <= max_length:
         return [text]
@@ -434,7 +584,10 @@ def split_message(text, max_length=MAX_MESSAGE_LENGTH):
         if cut <= 0:
             cut = max_length
 
-        chunks.append(text[:cut])
+        chunks.append(
+            text[:cut]
+        )
+
         text = text[cut:]
 
         if text.startswith("\n"):
@@ -446,7 +599,10 @@ def split_message(text, max_length=MAX_MESSAGE_LENGTH):
     return chunks
 
 
-async def send_long_message(message, text):
+async def send_long_message(
+    message,
+    text
+):
 
     chunks = split_message(text)
 
@@ -468,16 +624,18 @@ async def start_command(
     context: ContextTypes.DEFAULT_TYPE
 ):
 
-    user = update.effective_user
-
-    if not user:
+    if not update.effective_user:
         return
 
-    telegram_id = user.id
+    telegram_id = update.effective_user.id
 
-    create_user_if_needed(telegram_id)
+    create_user_if_needed(
+        telegram_id
+    )
 
-    if is_authorized(telegram_id):
+    if is_authorized(
+        telegram_id
+    ):
 
         await update.message.reply_text(
             "✅ Вы авторизованы.\n\n"
@@ -487,7 +645,8 @@ async def start_command(
         return
 
     await update.message.reply_text(
-        "🔐 Для использования бота введите пароль."
+        "🔐 Для использования бота "
+        "введите пароль."
     )
 
 
@@ -504,7 +663,8 @@ async def id_command(
         return
 
     await update.message.reply_text(
-        f"Ваш Telegram ID:\n{update.effective_user.id}"
+        f"Ваш Telegram ID:\n"
+        f"{update.effective_user.id}"
     )
 
 
@@ -523,7 +683,8 @@ async def keys_command(
     if update.effective_user.id != OWNER_ID:
 
         await update.message.reply_text(
-            "❌ У вас нет доступа к этой команде."
+            "❌ У вас нет доступа "
+            "к этой команде."
         )
 
         return
@@ -550,7 +711,7 @@ async def keys_command(
 
 
 # ============================================================
-# ОБРАБОТКА СООБЩЕНИЙ
+# ОБЫЧНЫЕ СООБЩЕНИЯ
 # ============================================================
 
 async def message_handler(
@@ -564,8 +725,6 @@ async def message_handler(
     if not update.effective_user:
         return
 
-    telegram_id = update.effective_user.id
-
     text = update.message.text
 
     if not text:
@@ -573,13 +732,25 @@ async def message_handler(
 
     text = text.strip()
 
-    create_user_if_needed(telegram_id)
+    telegram_id = (
+        update.effective_user.id
+    )
 
-    # ========================================================
-    # ПРОВЕРКА АВТОРИЗАЦИИ
-    # ========================================================
+    # --------------------------------------------------------
+    # Пользователь
+    # --------------------------------------------------------
 
-    if not is_authorized(telegram_id):
+    create_user_if_needed(
+        telegram_id
+    )
+
+    # --------------------------------------------------------
+    # Авторизация
+    # --------------------------------------------------------
+
+    if not is_authorized(
+        telegram_id
+    ):
 
         success = use_password(
             text,
@@ -590,86 +761,103 @@ async def message_handler(
 
             await update.message.reply_text(
                 "✅ Пароль принят!\n\n"
-                "Теперь отправьте ссылку на задание Skysmart."
+                "Теперь отправьте ссылку "
+                "на задание Skysmart."
             )
 
         else:
 
             await update.message.reply_text(
-                "❌ Неверный или уже использованный пароль."
+                "❌ Неверный или уже "
+                "использованный пароль."
             )
 
         return
 
-    # ========================================================
-    # ИЗВЛЕКАЕМ ROOM
-    # ========================================================
+    # --------------------------------------------------------
+    # Ссылка Skysmart
+    # --------------------------------------------------------
 
-    room_name = extract_room_name(text)
+    room_name = extract_room_name(
+        text
+    )
 
     if not room_name:
 
         await update.message.reply_text(
-            "❗ Отправьте ссылку на задание Skysmart.\n\n"
+            "❗ Отправьте ссылку "
+            "на задание Skysmart.\n\n"
             "Например:\n"
             "https://edu.skysmart.ru/student/..."
         )
 
         return
 
-    # ========================================================
-    # ПОЛУЧАЕМ ОТВЕТЫ
-    # ========================================================
+    # --------------------------------------------------------
+    # Сообщение обработки
+    # --------------------------------------------------------
 
-    processing_message = await update.message.reply_text(
-        "⏳ Получаю задания и ответы..."
+    processing_message = (
+        await update.message.reply_text(
+            "⏳ Получаю задания и ответы..."
+        )
     )
 
     try:
+
+        # ----------------------------------------------------
+        # Получаем API
+        # ----------------------------------------------------
 
         data = await asyncio.to_thread(
             get_skysmart_answers,
             room_name
         )
 
-        # ====================================================
-        # СОЗДАЁМ:
-        #
-        # all_tasks_answers = [
-        #     [...],
-        #     [...],
-        #     [...]
-        # ]
-        # ====================================================
+        # ----------------------------------------------------
+        # Создаём all_tasks_answers
+        # ----------------------------------------------------
 
-        all_tasks_answers = build_all_tasks_answers(data)
-
-        # ====================================================
-        # ПРЕОБРАЗУЕМ В ТЕКСТ
-        # ====================================================
-
-        result_text = format_all_tasks_answers(
-            all_tasks_answers
+        all_tasks_answers = (
+            build_all_tasks_answers(
+                data
+            )
         )
 
+        # ----------------------------------------------------
+        # Форматируем
+        # ----------------------------------------------------
+
+        result_text = (
+            format_all_tasks_answers(
+                all_tasks_answers
+            )
+        )
+
+        # ----------------------------------------------------
+        # Удаляем "Получаю..."
+        # ----------------------------------------------------
+
         try:
+
             await processing_message.delete()
+
         except Exception:
+
             pass
 
-        # ====================================================
-        # ОТПРАВЛЯЕМ РЕЗУЛЬТАТ
-        #
-        # parse_mode=None !!!
-        #
-        # Telegram НЕ должен пытаться обрабатывать HTML,
-        # Markdown или LaTeX.
-        # ====================================================
+        # ----------------------------------------------------
+        # Отправляем результат
+        # ----------------------------------------------------
 
         await send_long_message(
             update.message,
             result_text
         )
+
+    # ========================================================
+    # TIMEOUT
+    # ========================================================
 
     except requests.Timeout:
 
@@ -679,14 +867,50 @@ async def message_handler(
             pass
 
         await update.message.reply_text(
-            "⏱ Сервер Skysmart слишком долго отвечает. "
-            "Попробуйте ещё раз."
+            "⏱ Skysmart API не ответил "
+            "за 30 секунд."
         )
+
+    # ========================================================
+    # HTTP ERROR
+    # ========================================================
+
+    except requests.HTTPError as e:
+
+        logger.exception(
+            "HTTP ошибка Skysmart API: %s",
+            e
+        )
+
+        try:
+            await processing_message.delete()
+        except Exception:
+            pass
+
+        status_code = None
+
+        if e.response is not None:
+
+            status_code = (
+                e.response.status_code
+            )
+
+        await update.message.reply_text(
+            f"❌ Skysmart API вернул "
+            f"ошибку HTTP {status_code}.\n\n"
+            "Подробности находятся "
+            "в логах Render."
+        )
+
+    # ========================================================
+    # ОШИБКА СОЕДИНЕНИЯ
+    # ========================================================
 
     except requests.RequestException as e:
 
         logger.exception(
-            "Ошибка запроса Skysmart: %s",
+            "Ошибка соединения "
+            "со Skysmart API: %s",
             e
         )
 
@@ -696,8 +920,37 @@ async def message_handler(
             pass
 
         await update.message.reply_text(
-            "❌ Не удалось получить ответы от Skysmart."
+            "❌ Ошибка соединения "
+            "с сервером Skysmart API."
         )
+
+    # ========================================================
+    # ОШИБКА СТРУКТУРЫ API
+    # ========================================================
+
+    except ValueError as e:
+
+        logger.exception(
+            "Ошибка структуры ответа "
+            "Skysmart API: %s",
+            e
+        )
+
+        try:
+            await processing_message.delete()
+        except Exception:
+            pass
+
+        await update.message.reply_text(
+            "❌ Skysmart API вернул "
+            "неожиданный формат данных.\n\n"
+            "Подробности находятся "
+            "в логах Render."
+        )
+
+    # ========================================================
+    # ЛЮБАЯ ДРУГАЯ ОШИБКА
+    # ========================================================
 
     except Exception as e:
 
@@ -712,7 +965,8 @@ async def message_handler(
             pass
 
         await update.message.reply_text(
-            "❌ Произошла ошибка при обработке задания."
+            "❌ Произошла ошибка "
+            "при обработке задания."
         )
 
 
@@ -721,15 +975,24 @@ async def message_handler(
 # ============================================================
 
 application.add_handler(
-    CommandHandler("start", start_command)
+    CommandHandler(
+        "start",
+        start_command
+    )
 )
 
 application.add_handler(
-    CommandHandler("id", id_command)
+    CommandHandler(
+        "id",
+        id_command
+    )
 )
 
 application.add_handler(
-    CommandHandler("keys", keys_command)
+    CommandHandler(
+        "keys",
+        keys_command
+    )
 )
 
 application.add_handler(
@@ -756,7 +1019,11 @@ async def set_webhook():
     )
 
     logger.info(
-        "Webhook установлен:\n%s",
+        "Webhook установлен:"
+    )
+
+    logger.info(
+        "%s",
         webhook_url
     )
 
@@ -767,9 +1034,17 @@ async def set_webhook():
 
 async def startup():
 
-    logger.info("========================================")
-    logger.info("Запуск Telegram бота...")
-    logger.info("========================================")
+    logger.info(
+        "========================================"
+    )
+
+    logger.info(
+        "Запуск Telegram бота..."
+    )
+
+    logger.info(
+        "========================================"
+    )
 
     initialize_passwords()
 
@@ -786,7 +1061,9 @@ async def startup():
 
     await set_webhook()
 
-    logger.info("Бот успешно запущен!")
+    logger.info(
+        "Бот успешно запущен!"
+    )
 
 
 # ============================================================
@@ -795,7 +1072,9 @@ async def startup():
 
 async def shutdown():
 
-    logger.info("Остановка Telegram бота...")
+    logger.info(
+        "Остановка Telegram бота..."
+    )
 
     try:
         await application.stop()
@@ -809,24 +1088,30 @@ async def shutdown():
 
 
 # ============================================================
-# HTTP ROUTES
+# HTTP
 # ============================================================
 
-async def home(request: Request):
+async def home(
+    request: Request
+):
 
     return PlainTextResponse(
         "Telegram bot is running."
     )
 
 
-async def health(request: Request):
+async def health(
+    request: Request
+):
 
     return JSONResponse({
         "status": "ok"
     })
 
 
-async def telegram_webhook(request: Request):
+async def telegram_webhook(
+    request: Request
+):
 
     try:
 
@@ -872,19 +1157,27 @@ app = Starlette(
             home,
             methods=["GET", "HEAD"]
         ),
+
         Route(
             "/health",
             health,
             methods=["GET"]
         ),
+
         Route(
             WEBHOOK_PATH,
             telegram_webhook,
             methods=["POST"]
         ),
     ],
-    on_startup=[startup],
-    on_shutdown=[shutdown],
+
+    on_startup=[
+        startup
+    ],
+
+    on_shutdown=[
+        shutdown
+    ],
 )
 
 
