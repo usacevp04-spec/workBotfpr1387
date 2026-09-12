@@ -321,7 +321,7 @@ def remove_extra_newlines(text):
 
 
 # ============================================================
-# SKYSMART ANSWER PARSER
+# SKYSMART QUESTION PARSER
 # ============================================================
 
 def extract_task_question(soup):
@@ -385,135 +385,288 @@ def extract_task_full_question(soup):
     )
 
 
+# ============================================================
+# SKYSMART ANSWER PARSER
+# ============================================================
+
 def extract_task_answer(
     soup,
     task_number
 ):
 
-    answers = []
+    # ========================================================
+    # Здесь храним все найденные ответы.
+    #
+    # ВАЖНО:
+    # одинаковые ответы НЕ удаляются.
+    #
+    # Например:
+    #
+    # ["2", "2", "3", "2"]
+    #
+    # останется именно:
+    #
+    # ["2", "2", "3", "2"]
+    # ========================================================
+
+    ordered_answers = []
+
+    soup_html = str(soup)
 
     # --------------------------------------------------------
-    # 1. Обычный тест
+    # Получаем позицию элемента в исходном HTML
     # --------------------------------------------------------
 
-    for item in soup.find_all(
-        "vim-test-item",
-        attrs={"correct": "true"}
+    def get_position(element):
+
+        try:
+
+            element_html = str(element)
+
+            position = soup_html.find(
+                element_html
+            )
+
+            if position >= 0:
+                return position
+
+        except Exception:
+            pass
+
+        return 999999999
+
+    # --------------------------------------------------------
+    # Добавляем ответ
+    # --------------------------------------------------------
+
+    def add_answer(
+        element,
+        text,
+        priority=0
     ):
 
-        text = clean_text(
-            item.get_text(
-                " ",
-                strip=True
-            )
+        text = clean_text(text)
+
+        if not text:
+            return
+
+        ordered_answers.append(
+            {
+                "position": get_position(
+                    element
+                ),
+                "priority": priority,
+                "order": len(
+                    ordered_answers
+                ),
+                "text": text,
+            }
         )
 
-        if text:
-            answers.append(text)
+    # ========================================================
+    # 1. Обычный тест
+    # ========================================================
 
-    # --------------------------------------------------------
+    for item in soup.find_all(
+        "vim-test-item"
+    ):
+
+        correct = str(
+            item.get(
+                "correct",
+                ""
+            )
+        ).lower()
+
+        if correct != "true":
+            continue
+
+        text = item.get_text(
+            " ",
+            strip=True
+        )
+
+        add_answer(
+            item,
+            text,
+            1
+        )
+
+    # ========================================================
     # 2. Упорядочивание предложений
-    # --------------------------------------------------------
+    # ========================================================
 
     for item in soup.find_all(
         "vim-order-sentence-verify-item"
     ):
 
-        text = clean_text(
-            item.get_text(
-                " ",
-                strip=True
-            )
+        text = item.get_text(
+            " ",
+            strip=True
         )
 
-        if text:
-            answers.append(text)
+        add_answer(
+            item,
+            text,
+            2
+        )
 
-    # --------------------------------------------------------
-    # 3. Поле ввода
-    # --------------------------------------------------------
+    # ========================================================
+    # 3. Поля ввода
+    #
+    # В старой версии использовался find(),
+    # поэтому бралось только первое поле.
+    #
+    # Теперь обрабатываем ВСЕ vim-input-item.
+    # ========================================================
 
     for input_answer in soup.find_all(
         "vim-input-answers"
     ):
 
-        input_item = input_answer.find(
+        input_items = input_answer.find_all(
             "vim-input-item"
         )
 
-        if input_item:
+        for input_item in input_items:
 
-            text = clean_text(
-                input_item.get_text(
-                    " ",
-                    strip=True
-                )
+            text = input_item.get_text(
+                " ",
+                strip=True
             )
 
-            if text:
-                answers.append(text)
+            if not text:
 
-    # --------------------------------------------------------
+                for attr in (
+                    "value",
+                    "answer",
+                    "text"
+                ):
+
+                    value = input_item.get(
+                        attr
+                    )
+
+                    if value:
+
+                        text = str(
+                            value
+                        )
+
+                        break
+
+            add_answer(
+                input_item,
+                text,
+                3
+            )
+
+    # ========================================================
     # 4. Select
-    # --------------------------------------------------------
+    # ========================================================
 
-    for select_item in soup.find_all(
-        "vim-select-item",
-        attrs={"correct": "true"}
+    for item in soup.find_all(
+        "vim-select-item"
     ):
 
-        text = clean_text(
-            select_item.get_text(
-                " ",
-                strip=True
+        correct = str(
+            item.get(
+                "correct",
+                ""
             )
+        ).lower()
+
+        if correct != "true":
+            continue
+
+        text = item.get_text(
+            " ",
+            strip=True
         )
 
-        if text:
-            answers.append(text)
+        add_answer(
+            item,
+            text,
+            4
+        )
 
-    # --------------------------------------------------------
+    # ========================================================
     # 5. Выбор изображения
-    # --------------------------------------------------------
+    # ========================================================
 
-    for image_item in soup.find_all(
-        "vim-test-image-item",
-        attrs={"correct": "true"}
+    for item in soup.find_all(
+        "vim-test-image-item"
     ):
 
-        text = clean_text(
-            image_item.get_text(
-                " ",
-                strip=True
+        correct = str(
+            item.get(
+                "correct",
+                ""
             )
+        ).lower()
+
+        if correct != "true":
+            continue
+
+        text = item.get_text(
+            " ",
+            strip=True
         )
 
         if text:
-            answers.append(
+
+            text = (
                 f"{text} - Correct"
             )
 
-    # --------------------------------------------------------
-    # 6. Математический ответ
-    # --------------------------------------------------------
+        add_answer(
+            item,
+            text,
+            5
+        )
 
-    for math_answer in soup.find_all(
+    # ========================================================
+    # 6. Математический ответ
+    # ========================================================
+
+    for item in soup.find_all(
         "math-input-answer"
     ):
 
-        text = clean_text(
-            math_answer.get_text(
-                " ",
-                strip=True
-            )
+        text = item.get_text(
+            " ",
+            strip=True
         )
 
-        if text:
-            answers.append(text)
+        if not text:
 
-    # --------------------------------------------------------
+            for attr in (
+                "value",
+                "answer",
+                "text"
+            ):
+
+                value = item.get(
+                    attr
+                )
+
+                if value:
+
+                    text = str(
+                        value
+                    )
+
+                    break
+
+        add_answer(
+            item,
+            text,
+            6
+        )
+
+    # ========================================================
     # 7. Drag & Drop текста
-    # --------------------------------------------------------
+    # ========================================================
 
     for drop in soup.find_all(
         "vim-dnd-text-drop"
@@ -537,21 +690,23 @@ def extract_task_answer(
                 }
             )
 
-            if drag:
+            if not drag:
+                continue
 
-                text = clean_text(
-                    drag.get_text(
-                        " ",
-                        strip=True
-                    )
-                )
+            text = drag.get_text(
+                " ",
+                strip=True
+            )
 
-                if text:
-                    answers.append(text)
+            add_answer(
+                drop,
+                text,
+                7
+            )
 
-    # --------------------------------------------------------
+    # ========================================================
     # 8. Drag & Drop по группам
-    # --------------------------------------------------------
+    # ========================================================
 
     for drag_group in soup.find_all(
         "vim-dnd-group-drag"
@@ -584,30 +739,40 @@ def extract_task_answer(
                 if x.strip()
             ]
 
-            if answer_id in drag_ids:
+            if answer_id not in drag_ids:
+                continue
 
-                group_text = clean_text(
-                    group_item.get_text(
-                        " ",
-                        strip=True
-                    )
+            group_text = clean_text(
+                group_item.get_text(
+                    " ",
+                    strip=True
+                )
+            )
+
+            if group_text and drag_text:
+
+                text = (
+                    f"{group_text} - "
+                    f"{drag_text}"
                 )
 
-                if group_text:
+            elif group_text:
 
-                    if drag_text:
-                        answers.append(
-                            f"{group_text} - "
-                            f"{drag_text}"
-                        )
-                    else:
-                        answers.append(
-                            group_text
-                        )
+                text = group_text
 
-    # --------------------------------------------------------
+            else:
+
+                text = drag_text
+
+            add_answer(
+                drag_group,
+                text,
+                8
+            )
+
+    # ========================================================
     # 9. Base64 группы
-    # --------------------------------------------------------
+    # ========================================================
 
     for group_row in soup.find_all(
         "vim-groups-row"
@@ -639,10 +804,11 @@ def extract_task_answer(
                     decoded_text
                 )
 
-                if decoded_text:
-                    answers.append(
-                        decoded_text
-                    )
+                add_answer(
+                    group_item,
+                    decoded_text,
+                    9
+                )
 
             except Exception as e:
 
@@ -651,28 +817,38 @@ def extract_task_answer(
                     e
                 )
 
-    # --------------------------------------------------------
+    # ========================================================
     # 10. Зачёркивание
-    # --------------------------------------------------------
+    # ========================================================
 
-    for striked_item in soup.find_all(
-        "vim-strike-out-item",
-        attrs={"striked": "true"}
+    for item in soup.find_all(
+        "vim-strike-out-item"
     ):
 
-        text = clean_text(
-            striked_item.get_text(
-                " ",
-                strip=True
+        striked = str(
+            item.get(
+                "striked",
+                ""
             )
+        ).lower()
+
+        if striked != "true":
+            continue
+
+        text = item.get_text(
+            " ",
+            strip=True
         )
 
-        if text:
-            answers.append(text)
+        add_answer(
+            item,
+            text,
+            10
+        )
 
-    # --------------------------------------------------------
+    # ========================================================
     # 11. Drag & Drop изображений
-    # --------------------------------------------------------
+    # ========================================================
 
     for image_drag in soup.find_all(
         "vim-dnd-image-set-drag"
@@ -705,31 +881,40 @@ def extract_task_answer(
                 if x.strip()
             ]
 
-            if answer_id in drag_ids:
+            if answer_id not in drag_ids:
+                continue
 
-                image = clean_text(
-                    image_drop.get(
-                        "image",
-                        ""
-                    )
+            image = clean_text(
+                image_drop.get(
+                    "image",
+                    ""
+                )
+            )
+
+            if image and drag_text:
+
+                text = (
+                    f"{image} - "
+                    f"{drag_text}"
                 )
 
-                if image and drag_text:
+            elif drag_text:
 
-                    answers.append(
-                        f"{image} - "
-                        f"{drag_text}"
-                    )
+                text = drag_text
 
-                elif drag_text:
+            else:
 
-                    answers.append(
-                        drag_text
-                    )
+                text = image
 
-    # --------------------------------------------------------
+            add_answer(
+                image_drag,
+                text,
+                11
+            )
+
+    # ========================================================
     # 12. Обычный Drag & Drop изображений
-    # --------------------------------------------------------
+    # ========================================================
 
     for image_drag in soup.find_all(
         "vim-dnd-image-drag"
@@ -762,79 +947,107 @@ def extract_task_answer(
                 if x.strip()
             ]
 
-            if answer_id in drag_ids:
+            if answer_id not in drag_ids:
+                continue
 
-                drop_text = clean_text(
-                    image_drop.get_text(
-                        " ",
-                        strip=True
-                    )
+            drop_text = clean_text(
+                image_drop.get_text(
+                    " ",
+                    strip=True
+                )
+            )
+
+            if drop_text and drag_text:
+
+                text = (
+                    f"{drop_text} - "
+                    f"{drag_text}"
                 )
 
-                if drop_text and drag_text:
+            elif drag_text:
 
-                    answers.append(
-                        f"{drop_text} - "
-                        f"{drag_text}"
-                    )
+                text = drag_text
 
-                elif drag_text:
+            else:
 
-                    answers.append(
-                        drag_text
-                    )
+                text = drop_text
 
-                elif drop_text:
+            add_answer(
+                image_drag,
+                text,
+                12
+            )
 
-                    answers.append(
-                        drop_text
-                    )
-
-    # --------------------------------------------------------
+    # ========================================================
     # 13. Открытый ответ
-    # --------------------------------------------------------
+    # ========================================================
 
-    if soup.find(
+    open_answer = soup.find(
         "edu-open-answer",
-        attrs={"id": "OA1"}
-    ):
+        attrs={
+            "id": "OA1"
+        }
+    )
 
-        answers.append(
-            "File upload required"
+    if open_answer:
+
+        add_answer(
+            open_answer,
+            "File upload required",
+            13
         )
 
-    # --------------------------------------------------------
-    # Удаляем дубликаты
-    # --------------------------------------------------------
+    # ========================================================
+    # Сортируем ответы по их позиции в HTML
+    # ========================================================
 
-    unique_answers = []
+    ordered_answers.sort(
+        key=lambda item: (
+            item["position"],
+            item["priority"],
+            item["order"]
+        )
+    )
 
-    for answer in answers:
+    # ========================================================
+    # НЕ УДАЛЯЕМ ДУБЛИКАТЫ
+    # ========================================================
 
-        answer = clean_text(answer)
+    answers = [
+        item["text"]
+        for item in ordered_answers
+    ]
 
-        if not answer:
-            continue
+    logger.info(
+        "Skysmart: задание #%s -> %s ответов",
+        task_number,
+        len(answers)
+    )
 
-        if answer not in unique_answers:
-            unique_answers.append(answer)
+    logger.info(
+        "Skysmart: ответы задания #%s: %s",
+        task_number,
+        answers
+    )
 
     return {
         "question": extract_task_question(
             soup
         ),
+
         "full_question":
             extract_task_full_question(
                 soup
             ),
-        "answers": unique_answers,
+
+        "answers": answers,
+
         "task_number": task_number,
     }
 
 
 # ============================================================
-# ТВОЯ ФУНКЦИЯ get_skysmart_answers()
-# СИГНАТУРА СОХРАНЕНА
+# GET SKYSMART ANSWERS
 # ============================================================
 
 def get_skysmart_answers(room_name):
@@ -917,7 +1130,9 @@ def get_skysmart_answers(room_name):
                         index
                     )
 
-                    result.append(task)
+                    result.append(
+                        task
+                    )
 
                     logger.info(
                         "Skysmart: задание #%s "
@@ -947,13 +1162,19 @@ def get_skysmart_answers(room_name):
 
 
 # ============================================================
-# ТВОИ СТАРЫЕ ФУНКЦИИ
+# AUTH / OLD FUNCTIONS
 # ============================================================
 
 def password_keyboard():
 
     return ReplyKeyboardMarkup(
-        [[KeyboardButton("🆔 Мой ID")]],
+        [
+            [
+                KeyboardButton(
+                    "🆔 Мой ID"
+                )
+            ]
+        ],
         resize_keyboard=True,
     )
 
@@ -962,8 +1183,16 @@ def main_keyboard():
 
     return ReplyKeyboardMarkup(
         [
-            [KeyboardButton("📚 Получить ответы")],
-            [KeyboardButton("🆔 Мой ID")],
+            [
+                KeyboardButton(
+                    "📚 Получить ответы"
+                )
+            ],
+            [
+                KeyboardButton(
+                    "🆔 Мой ID"
+                )
+            ],
         ],
         resize_keyboard=True,
     )
@@ -1287,9 +1516,16 @@ def extract_room_name(text):
     return None
 
 
+# ============================================================
+# BUILD ANSWERS
+# ============================================================
+
 def build_all_tasks_answers(data):
 
-    if not isinstance(data, list):
+    if not isinstance(
+        data,
+        list
+    ):
 
         raise ValueError(
             "Ответ Skysmart должен "
@@ -1340,6 +1576,9 @@ def build_all_tasks_answers(data):
             list
         ):
 
+            # ВАЖНО:
+            # сохраняем все ответы как есть,
+            # включая одинаковые.
             all_tasks_answers[
                 index
             ] = list(answers)
@@ -1351,13 +1590,17 @@ def build_all_tasks_answers(data):
 
             all_tasks_answers[
                 index
-            ] = [answers]
+            ] = [
+                answers
+            ]
 
         else:
 
             all_tasks_answers[
                 index
-            ] = [answers]
+            ] = [
+                answers
+            ]
 
     logger.info(
         "ALL_TASKS_ANSWERS = %s",
@@ -1367,9 +1610,16 @@ def build_all_tasks_answers(data):
     return all_tasks_answers
 
 
+# ============================================================
+# МНОГОСТРОЧНЫЙ JSON
+# ============================================================
+
 def format_all_tasks_answers(
     all_tasks_answers
 ):
+
+    # Оставляем многострочный формат.
+    # Никакого вывода в одну строку.
 
     return json.dumps(
         all_tasks_answers,
