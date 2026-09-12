@@ -40,7 +40,13 @@ from supabase import create_client
 # ============================================================
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-RENDER_URL = os.getenv("RENDER_URL")
+
+# Render автоматически предоставляет эту переменную.
+# Если её нет — используем старую RENDER_URL.
+RENDER_URL = (
+    os.getenv("RENDER_EXTERNAL_URL")
+    or os.getenv("RENDER_URL")
+)
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
@@ -50,6 +56,31 @@ OWNER_ID = int(os.getenv("OWNER_ID", "0"))
 PORT = int(os.getenv("PORT", "10000"))
 
 WEBHOOK_PATH = "/telegram"
+
+
+# ============================================================
+# ПРОВЕРКА НАСТРОЕК
+# ============================================================
+
+if not BOT_TOKEN:
+    raise RuntimeError(
+        "BOT_TOKEN не установлен в Environment Variables"
+    )
+
+if not RENDER_URL:
+    raise RuntimeError(
+        "RENDER_EXTERNAL_URL и RENDER_URL не установлены"
+    )
+
+if not SUPABASE_URL:
+    raise RuntimeError(
+        "SUPABASE_URL не установлен в Environment Variables"
+    )
+
+if not SUPABASE_SERVICE_KEY:
+    raise RuntimeError(
+        "SUPABASE_SERVICE_KEY не установлен в Environment Variables"
+    )
 
 
 # ============================================================
@@ -91,13 +122,18 @@ PASSWORD_ALPHABET = (
 
 
 def password_keyboard():
+
     return ReplyKeyboardMarkup(
         [
             [
-                KeyboardButton("📚 Получить ответы"),
+                KeyboardButton(
+                    "📚 Получить ответы"
+                ),
             ],
             [
-                KeyboardButton("🆔 Мой ID"),
+                KeyboardButton(
+                    "🆔 Мой ID"
+                ),
             ],
         ],
         resize_keyboard=True,
@@ -105,13 +141,18 @@ def password_keyboard():
 
 
 def main_keyboard():
+
     return ReplyKeyboardMarkup(
         [
             [
-                KeyboardButton("📚 Получить ответы"),
+                KeyboardButton(
+                    "📚 Получить ответы"
+                ),
             ],
             [
-                KeyboardButton("🆔 Мой ID"),
+                KeyboardButton(
+                    "🆔 Мой ID"
+                ),
             ],
         ],
         resize_keyboard=True,
@@ -119,6 +160,7 @@ def main_keyboard():
 
 
 def generate_password():
+
     part1 = "".join(
         secrets.choice(PASSWORD_ALPHABET)
         for _ in range(4)
@@ -133,13 +175,16 @@ def generate_password():
 
 
 def hash_password(password):
+
     return hashlib.sha256(
         password.encode("utf-8")
     ).hexdigest()
 
 
 def initialize_passwords():
+
     try:
+
         result = (
             supabase
             .table("bot_passwords")
@@ -149,14 +194,17 @@ def initialize_passwords():
         )
 
         if result.data:
+
             logger.info(
                 "Пароли уже существуют."
             )
+
             return
 
         rows = []
 
         for _ in range(10):
+
             password = generate_password()
 
             rows.append(
@@ -170,13 +218,16 @@ def initialize_passwords():
 
         supabase.table(
             "bot_passwords"
-        ).insert(rows).execute()
+        ).insert(
+            rows
+        ).execute()
 
         logger.info(
             "Созданы новые пароли."
         )
 
     except Exception as e:
+
         logger.exception(
             "Ошибка initialize_passwords: %s",
             e,
@@ -184,16 +235,22 @@ def initialize_passwords():
 
 
 def create_user_if_needed(user_id):
+
     try:
+
         result = (
             supabase
             .table("bot_users")
             .select("*")
-            .eq("telegram_id", user_id)
+            .eq(
+                "telegram_id",
+                user_id,
+            )
             .execute()
         )
 
         if result.data:
+
             return result.data[0]
 
         result = (
@@ -209,9 +266,11 @@ def create_user_if_needed(user_id):
         )
 
         if result.data:
+
             return result.data[0]
 
     except Exception as e:
+
         logger.exception(
             "Ошибка create_user_if_needed: %s",
             e,
@@ -221,17 +280,23 @@ def create_user_if_needed(user_id):
 
 
 def is_authorized(user_id):
+
     try:
+
         result = (
             supabase
             .table("bot_users")
             .select("authorized")
-            .eq("telegram_id", user_id)
+            .eq(
+                "telegram_id",
+                user_id,
+            )
             .limit(1)
             .execute()
         )
 
         if not result.data:
+
             return False
 
         return bool(
@@ -242,6 +307,7 @@ def is_authorized(user_id):
         )
 
     except Exception as e:
+
         logger.exception(
             "Ошибка is_authorized: %s",
             e,
@@ -250,7 +316,11 @@ def is_authorized(user_id):
         return False
 
 
-def use_password(user_id, password):
+def use_password(
+    user_id,
+    password,
+):
+
     password = password.strip().upper()
 
     password_hash = hash_password(
@@ -258,49 +328,65 @@ def use_password(user_id, password):
     )
 
     try:
+
         result = (
             supabase
             .table("bot_passwords")
             .select("*")
-            .eq("password_hash", password_hash)
-            .eq("used", False)
+            .eq(
+                "password_hash",
+                password_hash,
+            )
+            .eq(
+                "used",
+                False,
+            )
             .limit(1)
             .execute()
         )
 
         if not result.data:
+
             return False
 
         password_row = result.data[0]
 
-        supabase.table(
-            "bot_passwords"
-        ).update(
-            {
-                "used": True,
-                "used_by": user_id,
-                "used_at": datetime.now(
-                    timezone.utc
-                ).isoformat(),
-            }
-        ).eq(
-            "id",
-            password_row["id"],
-        ).execute()
+        (
+            supabase
+            .table("bot_passwords")
+            .update(
+                {
+                    "used": True,
+                    "used_by": user_id,
+                    "used_at": datetime.now(
+                        timezone.utc
+                    ).isoformat(),
+                }
+            )
+            .eq(
+                "id",
+                password_row["id"],
+            )
+            .execute()
+        )
 
-        supabase.table(
-            "bot_users"
-        ).upsert(
-            {
-                "telegram_id": user_id,
-                "authorized": True,
-            },
-            on_conflict="telegram_id",
-        ).execute()
+        (
+            supabase
+            .table("bot_users")
+            .upsert(
+                {
+                    "telegram_id": user_id,
+                    "authorized": True,
+                },
+                on_conflict="telegram_id",
+            )
+            .execute()
+        )
 
         return True
 
     except Exception as e:
+
         logger.exception(
             "Ошибка use_password: %s",
             e,
@@ -334,16 +420,31 @@ SKYSMART_STEP_URL = (
 # ============================================================
 
 SKYSMART_HEADERS = {
+
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 "
         "(KHTML, like Gecko) "
         "Chrome/153.0.0.0 Safari/537.36"
     ),
-    "Accept": "application/json, text/plain, */*",
-    "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
-    "Origin": "https://edu.skysmart.ru",
-    "Referer": "https://edu.skysmart.ru/",
+
+    "Accept": (
+        "application/json, text/plain, */*"
+    ),
+
+    "Accept-Language": (
+        "ru-RU,ru;q=0.9,"
+        "en-US;q=0.8,en;q=0.7"
+    ),
+
+    "Origin": (
+        "https://edu.skysmart.ru"
+    ),
+
+    "Referer": (
+        "https://edu.skysmart.ru/"
+    ),
+
     "Connection": "keep-alive",
 }
 
@@ -353,6 +454,7 @@ SKYSMART_HEADERS = {
 # ============================================================
 
 def clean_text(text):
+
     if not text:
         return ""
 
@@ -371,15 +473,20 @@ def clean_text(text):
     lines = []
 
     for line in text.split("\n"):
+
         line = line.strip()
 
         if line:
+
             lines.append(line)
 
-    return "\n".join(lines).strip()
+    return "\n".join(
+        lines
+    ).strip()
 
 
 def remove_extra_newlines(text):
+
     if not text:
         return ""
 
@@ -395,6 +502,7 @@ def remove_extra_newlines(text):
 # ============================================================
 
 def extract_room_name(url):
+
     if not url:
         return None
 
@@ -404,6 +512,7 @@ def extract_room_name(url):
     )
 
     if match:
+
         return match.group(1)
 
     return None
@@ -416,6 +525,7 @@ def extract_room_name(url):
 class SkysmartAPIClient:
 
     def __init__(self):
+
         self.session = None
         self.jwt_token = None
 
@@ -440,6 +550,7 @@ class SkysmartAPIClient:
     ):
 
         if self.session:
+
             await self.session.close()
 
     # ========================================================
@@ -454,9 +565,6 @@ class SkysmartAPIClient:
 
         # ----------------------------------------------------
         # Вариант №1
-        #
-        # POST с JSON {}
-        # + браузерные заголовки.
         # ----------------------------------------------------
 
         try:
@@ -484,7 +592,10 @@ class SkysmartAPIClient:
                 if status == 200:
 
                     try:
-                        data = json.loads(text)
+
+                        data = json.loads(
+                            text
+                        )
 
                     except Exception:
 
@@ -494,7 +605,10 @@ class SkysmartAPIClient:
 
                         data = None
 
-                    if isinstance(data, dict):
+                    if isinstance(
+                        data,
+                        dict,
+                    ):
 
                         token = (
                             data.get("jwtToken")
@@ -513,7 +627,7 @@ class SkysmartAPIClient:
                             return True
 
                         logger.error(
-                            "AUTH #1: JWT отсутствует в ответе."
+                            "AUTH #1: JWT отсутствует."
                         )
 
                 else:
@@ -523,11 +637,12 @@ class SkysmartAPIClient:
                         status,
                     )
 
-                    # Безопасная диагностика.
-                    # Сам токен здесь никогда не выводится.
-                    server_preview = text[:500].replace(
-                        "\n",
-                        " ",
+                    server_preview = (
+                        text[:500]
+                        .replace(
+                            "\n",
+                            " ",
+                        )
                     )
 
                     logger.warning(
@@ -560,16 +675,16 @@ class SkysmartAPIClient:
 
         # ----------------------------------------------------
         # Вариант №2
-        #
-        # Некоторые API по-разному обрабатывают Content-Type.
-        # Пробуем тот же endpoint без явного JSON body.
         # ----------------------------------------------------
 
         try:
 
             auth_headers = {
                 **SKYSMART_HEADERS,
-                "Accept": "application/json, text/plain, */*",
+                "Accept": (
+                    "application/json, "
+                    "text/plain, */*"
+                ),
             }
 
             async with self.session.post(
@@ -589,7 +704,10 @@ class SkysmartAPIClient:
                 if status == 200:
 
                     try:
-                        data = json.loads(text)
+
+                        data = json.loads(
+                            text
+                        )
 
                     except Exception:
 
@@ -599,7 +717,10 @@ class SkysmartAPIClient:
 
                         data = None
 
-                    if isinstance(data, dict):
+                    if isinstance(
+                        data,
+                        dict,
+                    ):
 
                         token = (
                             data.get("jwtToken")
@@ -628,9 +749,12 @@ class SkysmartAPIClient:
                         status,
                     )
 
-                    server_preview = text[:500].replace(
-                        "\n",
-                        " ",
+                    server_preview = (
+                        text[:500]
+                        .replace(
+                            "\n",
+                            " ",
+                        )
                     )
 
                     logger.warning(
@@ -644,10 +768,6 @@ class SkysmartAPIClient:
                 "Ошибка AUTH ATTEMPT #2: %s",
                 e,
             )
-
-        # ----------------------------------------------------
-        # Авторизация полностью не удалась.
-        # ----------------------------------------------------
 
         logger.error(
             "Не удалось авторизоваться в Skysmart."
@@ -673,7 +793,9 @@ class SkysmartAPIClient:
 
             headers[
                 "Authorization"
-            ] = f"Bearer {self.jwt_token}"
+            ] = (
+                f"Bearer {self.jwt_token}"
+            )
 
         try:
 
@@ -708,7 +830,9 @@ class SkysmartAPIClient:
 
                 try:
 
-                    data = json.loads(text)
+                    data = json.loads(
+                        text
+                    )
 
                 except Exception:
 
@@ -746,7 +870,9 @@ class SkysmartAPIClient:
 
             headers[
                 "Authorization"
-            ] = f"Bearer {self.jwt_token}"
+            ] = (
+                f"Bearer {self.jwt_token}"
+            )
 
         url = (
             SKYSMART_STEP_URL
@@ -786,7 +912,9 @@ class SkysmartAPIClient:
 
                 try:
 
-                    data = json.loads(text)
+                    data = json.loads(
+                        text
+                    )
 
                 except Exception:
 
@@ -847,6 +975,7 @@ def extract_task_full_question(soup):
     )
 
     tags_to_remove = [
+
         "vim-instruction",
         "vim-groups",
         "vim-test-item",
@@ -897,13 +1026,10 @@ def extract_task_answer(
 
     answers = []
 
-    # --------------------------------------------------------
-    # Очистка ответа
-    # --------------------------------------------------------
-
     def clean_answer(value):
 
         if value is None:
+
             return ""
 
         value = str(value)
@@ -920,25 +1046,21 @@ def extract_task_answer(
 
         return value.strip()
 
-    # --------------------------------------------------------
-    # Добавление ответа
-    # --------------------------------------------------------
-
     def add_answer(value):
 
-        value = clean_answer(value)
+        value = clean_answer(
+            value
+        )
 
         if value:
-            answers.append(value)
 
-    # --------------------------------------------------------
-    # ОЧЕНЬ ВАЖНО:
-    #
-    # Один проход по DOM.
-    #
-    # Это сохраняет настоящий порядок
-    # элементов в HTML.
-    # --------------------------------------------------------
+            answers.append(
+                value
+            )
+
+    # ========================================================
+    # ОДИН ПРОХОД ПО DOM
+    # ========================================================
 
     for element in soup.find_all(True):
 
@@ -963,12 +1085,12 @@ def extract_task_answer(
 
             if answer is not None:
 
-                value = answer.get_text(
-                    " ",
-                    strip=True,
+                add_answer(
+                    answer.get_text(
+                        " ",
+                        strip=True,
+                    )
                 )
-
-                add_answer(value)
 
             continue
 
@@ -1004,7 +1126,9 @@ def extract_task_answer(
                     strip=True,
                 )
 
-            add_answer(value)
+            add_answer(
+                value
+            )
 
             continue
 
@@ -1199,6 +1323,7 @@ def extract_task_answer(
                 ):
 
                     if not drag_id:
+
                         continue
 
                     item = soup.find(
@@ -1325,6 +1450,7 @@ def extract_task_answer(
                 ):
 
                     if not drag_id:
+
                         continue
 
                     item = soup.find(
@@ -1547,7 +1673,7 @@ async def load_all_tasks(
             return []
 
         # ----------------------------------------------------
-        # Загружаем все задания параллельно
+        # Загружаем задания параллельно
         # ----------------------------------------------------
 
         tasks = []
@@ -1590,6 +1716,7 @@ async def load_all_tasks(
                 continue
 
             if not content:
+
                 continue
 
             try:
@@ -1599,11 +1726,9 @@ async def load_all_tasks(
                     "html.parser",
                 )
 
-                task = (
-                    extract_task_answer(
-                        soup,
-                        index,
-                    )
+                task = extract_task_answer(
+                    soup,
+                    index,
                 )
 
                 result.append(
@@ -1659,6 +1784,7 @@ def build_all_tasks_answers(
         data,
         list,
     ):
+
         return []
 
     all_tasks_answers = []
@@ -1669,6 +1795,7 @@ def build_all_tasks_answers(
             task,
             dict,
         ):
+
             continue
 
         task_number = task.get(
@@ -1745,6 +1872,7 @@ async def start_command(
     user = update.effective_user
 
     if not user:
+
         return
 
     user_id = user.id
@@ -1790,6 +1918,7 @@ async def id_command(
     user = update.effective_user
 
     if not user:
+
         return
 
     await update.message.reply_text(
@@ -1809,6 +1938,7 @@ async def keys_command(
     user = update.effective_user
 
     if not user:
+
         return
 
     if user.id != OWNER_ID:
@@ -1825,7 +1955,10 @@ async def keys_command(
             supabase
             .table("bot_passwords")
             .select("*")
-            .eq("used", False)
+            .eq(
+                "used",
+                False,
+            )
             .execute()
         )
 
@@ -1852,7 +1985,9 @@ async def keys_command(
                 )
 
         await update.message.reply_text(
-            "\n".join(hashes)
+            "\n".join(
+                hashes
+            )
         )
 
     except Exception as e:
@@ -1877,11 +2012,13 @@ async def message_handler(
 ):
 
     if not update.message:
+
         return
 
     user = update.effective_user
 
     if not user:
+
         return
 
     user_id = user.id
@@ -2082,6 +2219,10 @@ async def telegram_webhook(
 
         data = await request.json()
 
+        logger.info(
+            "Получен Telegram webhook update."
+        )
+
         update = Update.de_json(
             data,
             telegram_app.bot,
@@ -2146,16 +2287,19 @@ async def health(
 # ============================================================
 
 routes = [
+
     Route(
         "/",
         root,
         methods=["GET"],
     ),
+
     Route(
         "/health",
         health,
         methods=["GET"],
     ),
+
     Route(
         WEBHOOK_PATH,
         telegram_webhook,
@@ -2176,11 +2320,28 @@ async def initialize_telegram():
 
     global telegram_app
 
+    logger.info(
+        "========================================"
+    )
+
+    logger.info(
+        "Инициализация Telegram..."
+    )
+
+    logger.info(
+        "RENDER URL: %s",
+        RENDER_URL,
+    )
+
     telegram_app = (
         Application.builder()
         .token(BOT_TOKEN)
         .build()
     )
+
+    # --------------------------------------------------------
+    # HANDLERS
+    # --------------------------------------------------------
 
     telegram_app.add_handler(
         CommandHandler(
@@ -2211,23 +2372,107 @@ async def initialize_telegram():
         )
     )
 
+    # --------------------------------------------------------
+    # START APPLICATION
+    # --------------------------------------------------------
+
     await telegram_app.initialize()
 
     await telegram_app.start()
+
+    # --------------------------------------------------------
+    # WEBHOOK URL
+    # --------------------------------------------------------
 
     webhook_url = (
         RENDER_URL.rstrip("/")
         + WEBHOOK_PATH
     )
 
-    await telegram_app.bot.set_webhook(
-        webhook_url
+    logger.info(
+        "Устанавливаю Telegram webhook:"
     )
 
     logger.info(
-        "Telegram webhook установлен: %s",
+        "%s",
         webhook_url,
     )
+
+    # --------------------------------------------------------
+    # SET WEBHOOK
+    # --------------------------------------------------------
+
+    await telegram_app.bot.set_webhook(
+        url=webhook_url,
+        drop_pending_updates=False,
+        allowed_updates=[
+            "message",
+            "edited_message",
+            "callback_query",
+        ],
+    )
+
+    # --------------------------------------------------------
+    # ПРОВЕРЯЕМ WEBHOOK
+    # --------------------------------------------------------
+
+    webhook_info = (
+        await telegram_app.bot.get_webhook_info()
+    )
+
+    logger.info(
+        "========================================"
+    )
+
+    logger.info(
+        "TELEGRAM WEBHOOK INFO"
+    )
+
+    logger.info(
+        "URL: %s",
+        webhook_info.url,
+    )
+
+    logger.info(
+        "PENDING UPDATES: %s",
+        webhook_info.pending_update_count,
+    )
+
+    logger.info(
+        "LAST ERROR DATE: %s",
+        webhook_info.last_error_date,
+    )
+
+    logger.info(
+        "LAST ERROR MESSAGE: %s",
+        webhook_info.last_error_message,
+    )
+
+    logger.info(
+        "========================================"
+    )
+
+    if webhook_info.url != webhook_url:
+
+        logger.error(
+            "ОШИБКА: Telegram установил другой webhook URL!"
+        )
+
+        logger.error(
+            "Ожидался: %s",
+            webhook_url,
+        )
+
+        logger.error(
+            "Получен: %s",
+            webhook_info.url,
+        )
+
+    else:
+
+        logger.info(
+            "Telegram webhook успешно установлен!"
+        )
 
 
 # ============================================================
@@ -2235,6 +2480,33 @@ async def initialize_telegram():
 # ============================================================
 
 async def startup():
+
+    logger.info(
+        "========================================"
+    )
+
+    logger.info(
+        "STARTUP"
+    )
+
+    logger.info(
+        "Порт: %s",
+        PORT,
+    )
+
+    logger.info(
+        "Render URL: %s",
+        RENDER_URL,
+    )
+
+    logger.info(
+        "Webhook path: %s",
+        WEBHOOK_PATH,
+    )
+
+    logger.info(
+        "========================================"
+    )
 
     initialize_passwords()
 
@@ -2251,26 +2523,53 @@ async def shutdown():
 
     if telegram_app:
 
+        logger.info(
+            "Останавливаю Telegram Application..."
+        )
+
+        # ВАЖНО:
+        # НЕ удаляем webhook здесь.
+        #
+        # Render может перезапустить сервис,
+        # и удаление webhook приведёт к тому,
+        # что Telegram перестанет отправлять сообщения.
+
         try:
 
-            await telegram_app.bot.delete_webhook()
+            await telegram_app.stop()
 
         except Exception:
 
-            pass
+            logger.exception(
+                "Ошибка остановки Telegram Application"
+            )
 
-        await telegram_app.stop()
+        try:
 
-        await telegram_app.shutdown()
+            await telegram_app.shutdown()
+
+        except Exception:
+
+            logger.exception(
+                "Ошибка shutdown Telegram Application"
+            )
 
 
-@app.on_event("startup")
+# ============================================================
+# STARLETTE STARTUP
+# ============================================================
+
+@app.on_event(
+    "startup"
+)
 async def on_startup():
 
     await startup()
 
 
-@app.on_event("shutdown")
+@app.on_event(
+    "shutdown"
+)
 async def on_shutdown():
 
     await shutdown()
@@ -2292,3 +2591,4 @@ if __name__ == "__main__":
         host="0.0.0.0",
         port=PORT,
     )
+
