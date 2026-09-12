@@ -1,14 +1,12 @@
 import os
 import re
 import json
-import time
 import hashlib
 import secrets
 import logging
 import asyncio
 import base64
 
-import requests
 import aiohttp
 import uvicorn
 
@@ -25,6 +23,7 @@ from telegram import (
     ReplyKeyboardMarkup,
     KeyboardButton,
 )
+
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -310,46 +309,8 @@ def use_password(user_id, password):
         return False
 
 
-def make_password_list():
-    try:
-        result = (
-            supabase
-            .table("bot_passwords")
-            .select("*")
-            .eq("used", False)
-            .execute()
-        )
-
-        if not result.data:
-            return "Свободных паролей нет."
-
-        passwords = []
-
-        for row in result.data:
-            password_hash = row.get(
-                "password_hash"
-            )
-
-            if not password_hash:
-                continue
-
-            passwords.append(
-                password_hash
-            )
-
-        return "\n".join(passwords)
-
-    except Exception as e:
-        logger.exception(
-            "Ошибка make_password_list: %s",
-            e,
-        )
-
-        return "Ошибка получения паролей."
-
-
 # ============================================================
-# SKySMART
+# SKYSMART
 # ============================================================
 
 SKYSMART_ROOM_URL = (
@@ -366,6 +327,25 @@ SKYSMART_STEP_URL = (
     "https://api-edu.skysmart.ru/"
     "api/v1/content/step/load?stepUuid="
 )
+
+
+# ============================================================
+# SKYSMART HTTP HEADERS
+# ============================================================
+
+SKYSMART_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 "
+        "(KHTML, like Gecko) "
+        "Chrome/153.0.0.0 Safari/537.36"
+    ),
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
+    "Origin": "https://edu.skysmart.ru",
+    "Referer": "https://edu.skysmart.ru/",
+    "Connection": "keep-alive",
+}
 
 
 # ============================================================
@@ -440,12 +420,14 @@ class SkysmartAPIClient:
         self.jwt_token = None
 
     async def __aenter__(self):
+
         timeout = aiohttp.ClientTimeout(
             total=60
         )
 
         self.session = aiohttp.ClientSession(
-            timeout=timeout
+            timeout=timeout,
+            headers=SKYSMART_HEADERS,
         )
 
         return self
@@ -456,71 +438,245 @@ class SkysmartAPIClient:
         exc,
         tb,
     ):
+
         if self.session:
             await self.session.close()
 
+    # ========================================================
+    # АВТОРИЗАЦИЯ
+    # ========================================================
+
     async def authenticate(self):
+
+        logger.info(
+            "Начинаю авторизацию Skysmart..."
+        )
+
+        # ----------------------------------------------------
+        # Вариант №1
+        #
+        # POST с JSON {}
+        # + браузерные заголовки.
+        # ----------------------------------------------------
+
         try:
+
+            auth_headers = {
+                **SKYSMART_HEADERS,
+                "Content-Type": "application/json",
+            }
+
             async with self.session.post(
                 SKYSMART_AUTH_URL,
                 json={},
+                headers=auth_headers,
             ) as response:
 
+                status = response.status
+
                 logger.info(
-                    "AUTH STATUS: %s",
-                    response.status,
+                    "AUTH ATTEMPT #1 STATUS: %s",
+                    status,
                 )
 
                 text = await response.text()
 
-                if response.status != 200:
-                    logger.error(
-                        "AUTH ERROR: %s",
-                        text[:1000],
+                if status == 200:
+
+                    try:
+                        data = json.loads(text)
+
+                    except Exception:
+
+                        logger.error(
+                            "AUTH #1: сервер вернул не JSON."
+                        )
+
+                        data = None
+
+                    if isinstance(data, dict):
+
+                        token = (
+                            data.get("jwtToken")
+                            or data.get("token")
+                            or data.get("accessToken")
+                        )
+
+                        if token:
+
+                            self.jwt_token = token
+
+                            logger.info(
+                                "AUTH #1: JWT получен."
+                            )
+
+                            return True
+
+                        logger.error(
+                            "AUTH #1: JWT отсутствует в ответе."
+                        )
+
+                else:
+
+                    logger.warning(
+                        "AUTH #1 отклонён. STATUS=%s",
+                        status,
                     )
-                    return False
 
-                try:
-                    data = json.loads(text)
-                except Exception:
-                    logger.error(
-                        "Не удалось распарсить AUTH JSON."
+                    # Безопасная диагностика.
+                    # Сам токен здесь никогда не выводится.
+                    server_preview = text[:500].replace(
+                        "\n",
+                        " ",
                     )
-                    return False
 
-                self.jwt_token = (
-                    data.get("jwtToken")
-                    or data.get("token")
-                )
-
-                if not self.jwt_token:
-                    logger.error(
-                        "JWT token не найден."
+                    logger.warning(
+                        "AUTH #1 RESPONSE: %s",
+                        server_preview,
                     )
-                    return False
 
-                return True
+                    logger.info(
+                        "AUTH #1 CONTENT-TYPE: %s",
+                        response.headers.get(
+                            "Content-Type",
+                            "",
+                        ),
+                    )
+
+                    logger.info(
+                        "AUTH #1 SERVER: %s",
+                        response.headers.get(
+                            "Server",
+                            "",
+                        ),
+                    )
 
         except Exception as e:
+
             logger.exception(
-                "Ошибка authenticate: %s",
+                "Ошибка AUTH ATTEMPT #1: %s",
                 e,
             )
 
-            return False
+        # ----------------------------------------------------
+        # Вариант №2
+        #
+        # Некоторые API по-разному обрабатывают Content-Type.
+        # Пробуем тот же endpoint без явного JSON body.
+        # ----------------------------------------------------
+
+        try:
+
+            auth_headers = {
+                **SKYSMART_HEADERS,
+                "Accept": "application/json, text/plain, */*",
+            }
+
+            async with self.session.post(
+                SKYSMART_AUTH_URL,
+                headers=auth_headers,
+            ) as response:
+
+                status = response.status
+
+                logger.info(
+                    "AUTH ATTEMPT #2 STATUS: %s",
+                    status,
+                )
+
+                text = await response.text()
+
+                if status == 200:
+
+                    try:
+                        data = json.loads(text)
+
+                    except Exception:
+
+                        logger.error(
+                            "AUTH #2: сервер вернул не JSON."
+                        )
+
+                        data = None
+
+                    if isinstance(data, dict):
+
+                        token = (
+                            data.get("jwtToken")
+                            or data.get("token")
+                            or data.get("accessToken")
+                        )
+
+                        if token:
+
+                            self.jwt_token = token
+
+                            logger.info(
+                                "AUTH #2: JWT получен."
+                            )
+
+                            return True
+
+                        logger.error(
+                            "AUTH #2: JWT отсутствует."
+                        )
+
+                else:
+
+                    logger.warning(
+                        "AUTH #2 отклонён. STATUS=%s",
+                        status,
+                    )
+
+                    server_preview = text[:500].replace(
+                        "\n",
+                        " ",
+                    )
+
+                    logger.warning(
+                        "AUTH #2 RESPONSE: %s",
+                        server_preview,
+                    )
+
+        except Exception as e:
+
+            logger.exception(
+                "Ошибка AUTH ATTEMPT #2: %s",
+                e,
+            )
+
+        # ----------------------------------------------------
+        # Авторизация полностью не удалась.
+        # ----------------------------------------------------
+
+        logger.error(
+            "Не удалось авторизоваться в Skysmart."
+        )
+
+        return False
+
+    # ========================================================
+    # ПОЛУЧЕНИЕ ROOM
+    # ========================================================
 
     async def get_room(
         self,
         task_hash,
     ):
-        headers = {}
+
+        headers = {
+            **SKYSMART_HEADERS,
+            "Content-Type": "application/json",
+        }
 
         if self.jwt_token:
+
             headers[
                 "Authorization"
             ] = f"Bearer {self.jwt_token}"
 
         try:
+
             async with self.session.post(
                 SKYSMART_ROOM_URL,
                 json={
@@ -537,23 +693,35 @@ class SkysmartAPIClient:
                 text = await response.text()
 
                 if response.status != 200:
+
                     logger.error(
-                        "ROOM ERROR: %s",
+                        "ROOM ERROR STATUS: %s",
+                        response.status,
+                    )
+
+                    logger.error(
+                        "ROOM ERROR RESPONSE: %s",
                         text[:1000],
                     )
+
                     return None
 
                 try:
+
                     data = json.loads(text)
+
                 except Exception:
+
                     logger.error(
                         "ROOM response не JSON."
                     )
+
                     return None
 
                 return data
 
         except Exception as e:
+
             logger.exception(
                 "Ошибка get_room: %s",
                 e,
@@ -561,13 +729,21 @@ class SkysmartAPIClient:
 
             return None
 
+    # ========================================================
+    # ПОЛУЧЕНИЕ STEP
+    # ========================================================
+
     async def get_task_html(
         self,
         uuid,
     ):
-        headers = {}
+
+        headers = {
+            **SKYSMART_HEADERS,
+        }
 
         if self.jwt_token:
+
             headers[
                 "Authorization"
             ] = f"Bearer {self.jwt_token}"
@@ -578,6 +754,7 @@ class SkysmartAPIClient:
         )
 
         try:
+
             async with self.session.get(
                 url,
                 headers=headers,
@@ -592,20 +769,32 @@ class SkysmartAPIClient:
                 text = await response.text()
 
                 if response.status != 200:
+
                     logger.error(
-                        "STEP ERROR %s: %s",
+                        "STEP ERROR %s STATUS: %s",
                         uuid,
-                        text[:1000],
+                        response.status,
                     )
+
+                    logger.error(
+                        "STEP ERROR RESPONSE %s: %s",
+                        uuid,
+                        text[:500],
+                    )
+
                     return None
 
                 try:
+
                     data = json.loads(text)
+
                 except Exception:
+
                     logger.error(
                         "STEP response не JSON: %s",
                         uuid,
                     )
+
                     return None
 
                 return data.get(
@@ -614,6 +803,7 @@ class SkysmartAPIClient:
                 )
 
         except Exception as e:
+
             logger.exception(
                 "Ошибка get_task_html %s: %s",
                 uuid,
@@ -634,6 +824,7 @@ def extract_task_question(soup):
     )
 
     if instruction:
+
         return clean_text(
             instruction.get_text(
                 " ",
@@ -678,9 +869,11 @@ def extract_task_full_question(soup):
     ]
 
     for tag_name in tags_to_remove:
+
         for tag in soup_copy.find_all(
             tag_name
         ):
+
             tag.decompose()
 
     text = soup_copy.get_text(
@@ -701,33 +894,11 @@ def extract_task_answer(
     soup,
     task_number,
 ):
-    """
-    ВАЖНО:
-
-    Ответы извлекаются строго в порядке DOM.
-
-    То есть если HTML содержит:
-
-        math-input -> 2
-        math-input -> 2
-        math-input -> 4
-        math-input -> 3
-        math-input -> 2
-        math-input -> 4
-        math-input -> 4
-
-    результат будет:
-
-        2 2 4 3 2 4 4
-
-    Никакой сортировки по типам элементов
-    здесь больше нет.
-    """
 
     answers = []
 
     # --------------------------------------------------------
-    # Очистка отдельного ответа
+    # Очистка ответа
     # --------------------------------------------------------
 
     def clean_answer(value):
@@ -761,19 +932,12 @@ def extract_task_answer(
             answers.append(value)
 
     # --------------------------------------------------------
-    # ВАЖНО:
+    # ОЧЕНЬ ВАЖНО:
     #
-    # find_all(True) возвращает элементы
-    # в том порядке, в котором они идут
-    # непосредственно в HTML.
+    # Один проход по DOM.
     #
-    # Мы больше НЕ собираем:
-    #
-    # сначала все test-item,
-    # потом все input,
-    # потом все select.
-    #
-    # Поэтому порядок не ломается.
+    # Это сохраняет настоящий порядок
+    # элементов в HTML.
     # --------------------------------------------------------
 
     for element in soup.find_all(True):
@@ -782,15 +946,6 @@ def extract_task_answer(
 
         # ====================================================
         # 1. math-input
-        #
-        # Это основной случай для обычных полей
-        # математического ответа.
-        #
-        # Пример:
-        #
-        # <math-input id="MI1">
-        #     <math-input-answer>20</math-input-answer>
-        # </math-input>
         # ====================================================
 
         if tag == "math-input":
@@ -801,6 +956,7 @@ def extract_task_answer(
             )
 
             if answer is None:
+
                 answer = element.find(
                     "math-input-answer"
                 )
@@ -836,10 +992,13 @@ def extract_task_answer(
                 )
 
                 if attr_value:
+
                     value = attr_value
+
                     break
 
             if value is None:
+
                 value = element.get_text(
                     " ",
                     strip=True,
@@ -1303,6 +1462,11 @@ async def load_all_tasks(
         )
 
         if not authenticated:
+
+            logger.error(
+                "Остановка: Skysmart AUTH не пройдена."
+            )
+
             return []
 
         # ----------------------------------------------------
@@ -1314,6 +1478,11 @@ async def load_all_tasks(
         )
 
         if not room_data:
+
+            logger.error(
+                "Не удалось получить room."
+            )
+
             return []
 
         # ----------------------------------------------------
@@ -1326,7 +1495,10 @@ async def load_all_tasks(
             "meta"
         )
 
-        if isinstance(meta, dict):
+        if isinstance(
+            meta,
+            dict,
+        ):
 
             uuids = meta.get(
                 "stepUuids"
@@ -1336,10 +1508,8 @@ async def load_all_tasks(
                 uuids,
                 list,
             ):
-                step_uuids = uuids
 
-        # Иногда структура может быть
-        # непосредственно в data.
+                step_uuids = uuids
 
         if not step_uuids:
 
@@ -1360,6 +1530,7 @@ async def load_all_tasks(
                     uuids,
                     list,
                 ):
+
                     step_uuids = uuids
 
         logger.info(
@@ -1368,6 +1539,11 @@ async def load_all_tasks(
         )
 
         if not step_uuids:
+
+            logger.error(
+                "STEP UUID не найдены."
+            )
+
             return []
 
         # ----------------------------------------------------
@@ -1376,10 +1552,7 @@ async def load_all_tasks(
 
         tasks = []
 
-        for index, uuid in enumerate(
-            step_uuids,
-            start=1,
-        ):
+        for uuid in step_uuids:
 
             tasks.append(
                 client.get_task_html(
@@ -1511,12 +1684,14 @@ def build_all_tasks_answers(
             answers,
             list,
         ):
+
             answers = []
 
         if not isinstance(
             task_number,
             int,
         ):
+
             continue
 
         while len(
@@ -1526,14 +1701,6 @@ def build_all_tasks_answers(
             all_tasks_answers.append(
                 []
             )
-
-        # НИКАКОЙ дедупликации здесь нет.
-        #
-        # Например:
-        #
-        # ["2", "2", "4", "3", "2", "4", "4"]
-        #
-        # останется именно таким.
 
         all_tasks_answers[
             task_number - 1
@@ -1558,9 +1725,6 @@ def build_all_tasks_answers(
 def format_all_tasks_answers(
     all_tasks_answers
 ):
-
-    # ВАЖНО:
-    # indent=2 оставляет многострочный JSON.
 
     return json.dumps(
         all_tasks_answers,
@@ -1673,13 +1837,6 @@ async def keys_command(
 
             return
 
-        # ВНИМАНИЕ:
-        # В таблице хранится hash, поэтому
-        # старые пароли невозможно восстановить.
-        #
-        # Этот вывод оставлен для совместимости
-        # с текущей логикой.
-
         hashes = []
 
         for row in result.data:
@@ -1747,7 +1904,7 @@ async def message_handler(
         return
 
     # --------------------------------------------------------
-    # Инициализация пользователя
+    # Инициализация
     # --------------------------------------------------------
 
     create_user_if_needed(
@@ -1755,14 +1912,12 @@ async def message_handler(
     )
 
     # --------------------------------------------------------
-    # Если пользователь не авторизован
+    # Авторизация
     # --------------------------------------------------------
 
     if not is_authorized(
         user_id
     ):
-
-        # Пароль
 
         if use_password(
             user_id,
@@ -1789,7 +1944,7 @@ async def message_handler(
         return
 
     # --------------------------------------------------------
-    # Кнопка получения ответов
+    # Получить ответы
     # --------------------------------------------------------
 
     if text == "📚 Получить ответы":
@@ -1846,7 +2001,7 @@ async def message_handler(
             return
 
         # ----------------------------------------------------
-        # Формируем итоговый массив
+        # Формируем массив
         # ----------------------------------------------------
 
         all_tasks_answers = (
@@ -1856,7 +2011,7 @@ async def message_handler(
         )
 
         # ----------------------------------------------------
-        # Формируем многострочный JSON
+        # Формируем JSON
         # ----------------------------------------------------
 
         output = (
@@ -1866,8 +2021,7 @@ async def message_handler(
         )
 
         # ----------------------------------------------------
-        # Telegram ограничивает сообщение
-        # примерно 4096 символами.
+        # Telegram limit
         # ----------------------------------------------------
 
         MAX_MESSAGE_LENGTH = 3900
@@ -2015,7 +2169,7 @@ app = Starlette(
 
 
 # ============================================================
-# ЗАПУСК
+# ЗАПУСК TELEGRAM
 # ============================================================
 
 async def initialize_telegram():
@@ -2076,12 +2230,20 @@ async def initialize_telegram():
     )
 
 
+# ============================================================
+# STARTUP
+# ============================================================
+
 async def startup():
 
     initialize_passwords()
 
     await initialize_telegram()
 
+
+# ============================================================
+# SHUTDOWN
+# ============================================================
 
 async def shutdown():
 
@@ -2090,8 +2252,11 @@ async def shutdown():
     if telegram_app:
 
         try:
+
             await telegram_app.bot.delete_webhook()
+
         except Exception:
+
             pass
 
         await telegram_app.stop()
