@@ -16,12 +16,7 @@ from starlette.requests import Request
 from starlette.responses import PlainTextResponse, JSONResponse
 from starlette.routing import Route
 
-from telegram import (
-    Update,
-    ReplyKeyboardMarkup,
-    KeyboardButton,
-)
-
+from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -39,14 +34,14 @@ from supabase import create_client
 
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(message)s",
+    format="%(asctime)s | %(levelname)s | %(message)s"
 )
 
 logger = logging.getLogger(__name__)
 
 
 # ============================================================
-# SETTINGS
+# ENV
 # ============================================================
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -64,28 +59,37 @@ PORT = int(os.getenv("PORT", "10000"))
 
 WEBHOOK_PATH = "/telegram"
 
+
+# ============================================================
+# SKYSMART API
+# ============================================================
+
 SKYSMART_ROOM_URL = (
     "https://api-edu.skysmart.ru/api/v1/task/preview"
 )
 
 SKYSMART_AUTH_URL = (
-    "https://api-edu.skysmart.ru/api/v1/user/registration/teacher"
+    "https://api-edu.skysmart.ru/"
+    "api/v1/user/registration/teacher"
 )
 
 SKYSMART_STEP_URL = (
-    "https://api-edu.skysmart.ru/api/v1/content/step/load?stepUuid="
+    "https://api-edu.skysmart.ru/"
+    "api/v1/content/step/load?stepUuid="
 )
 
 
 # ============================================================
-# STARTUP CHECK
+# CHECK ENV
 # ============================================================
 
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN не задан")
 
 if not RENDER_URL:
-    raise RuntimeError("RENDER_EXTERNAL_URL / RENDER_URL не задан")
+    raise RuntimeError(
+        "RENDER_EXTERNAL_URL / RENDER_URL не задан"
+    )
 
 if not SUPABASE_URL:
     raise RuntimeError("SUPABASE_URL не задан")
@@ -100,7 +104,7 @@ if not SUPABASE_SERVICE_KEY:
 
 supabase = create_client(
     SUPABASE_URL,
-    SUPABASE_SERVICE_KEY,
+    SUPABASE_SERVICE_KEY
 )
 
 
@@ -112,7 +116,7 @@ user_states = {}
 
 
 # ============================================================
-# PASSWORD / AUTH
+# AUTH / PASSWORDS
 # ============================================================
 
 def hash_password(password: str) -> str:
@@ -124,6 +128,7 @@ def hash_password(password: str) -> str:
 def generate_password() -> str:
     part1 = secrets.token_hex(2).upper()
     part2 = secrets.token_hex(2).upper()
+
     return f"{part1}-{part2}"
 
 
@@ -136,7 +141,7 @@ def create_passwords(count: int = 10):
 
         supabase.table("bot_passwords").insert({
             "password_hash": password_hash,
-            "used": False,
+            "used": False
         }).execute()
 
         created.append(password)
@@ -168,7 +173,7 @@ def mark_password_used(password: str, user_id: int):
         .table("bot_passwords")
         .update({
             "used": True,
-            "used_by": str(user_id),
+            "used_by": str(user_id)
         })
         .eq("password_hash", password_hash)
         .execute()
@@ -185,10 +190,7 @@ def get_user(user_id: int):
         .execute()
     )
 
-    if result.data:
-        return result.data[0]
-
-    return None
+    return result.data[0] if result.data else None
 
 
 def create_user(user_id: int):
@@ -201,24 +203,21 @@ def create_user(user_id: int):
         supabase
         .table("bot_users")
         .insert({
-            "telegram_id": str(user_id),
+            "telegram_id": str(user_id)
         })
         .execute()
     )
 
-    if result.data:
-        return result.data[0]
-
-    return None
+    return result.data[0] if result.data else None
 
 
-def authorize_user(user_id: int):
+def authorize_user(user_id: int) -> bool:
     user = get_user(user_id)
 
-    if not user:
-        return False
-
-    return bool(user.get("authorized", False))
+    return bool(
+        user
+        and user.get("authorized", False)
+    )
 
 
 def set_user_authorized(user_id: int):
@@ -226,7 +225,7 @@ def set_user_authorized(user_id: int):
         supabase
         .table("bot_users")
         .update({
-            "authorized": True,
+            "authorized": True
         })
         .eq("telegram_id", str(user_id))
         .execute()
@@ -234,19 +233,19 @@ def set_user_authorized(user_id: int):
 
 
 # ============================================================
-# KEYBOARDS
+# TELEGRAM KEYBOARD
 # ============================================================
 
 MAIN_KEYBOARD = ReplyKeyboardMarkup(
     [
         [
-            KeyboardButton("📚 Получить ответы"),
+            KeyboardButton("📚 Получить ответы")
         ],
         [
-            KeyboardButton("🆔 Мой ID"),
-        ],
+            KeyboardButton("🆔 Мой ID")
+        ]
     ],
-    resize_keyboard=True,
+    resize_keyboard=True
 )
 
 
@@ -255,79 +254,92 @@ MAIN_KEYBOARD = ReplyKeyboardMarkup(
 # ============================================================
 
 class SkysmartAPIClient:
-    """
-    Клиент Skysmart API.
-
-    Архитектура оставлена такой же:
-        authenticate()
-        ↓
-        get_room()
-        ↓
-        get_task_html()
-    """
 
     def __init__(self):
         self.session = None
         self.token = ""
 
     async def _ensure_session(self):
-        if self.session is None or self.session.closed:
-            timeout = aiohttp.ClientTimeout(total=60)
+
+        if (
+            self.session is None
+            or self.session.closed
+        ):
+            timeout = aiohttp.ClientTimeout(
+                total=60
+            )
 
             self.session = aiohttp.ClientSession(
                 timeout=timeout
             )
 
     async def close(self):
-        if self.session and not self.session.closed:
+
+        if (
+            self.session
+            and not self.session.closed
+        ):
             await self.session.close()
 
     async def authenticate(self):
+
         await self._ensure_session()
 
         headers = {
             "Connection": "keep-alive",
             "Content-Type": "application/json",
+
             "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "Mozilla/5.0 "
+                "(Windows NT 10.0; Win64; x64) "
                 "AppleWebKit/537.36 "
                 "(KHTML, like Gecko) "
-                "Chrome/153.0.0.0 Safari/537.36"
+                "Chrome/153.0.0.0 "
+                "Safari/537.36"
             ),
-            "Accept": "application/json, text/plain, */*",
+
+            "Accept": (
+                "application/json, "
+                "text/plain, */*"
+            ),
         }
 
-        logger.info("Skysmart AUTH: отправляем запрос")
+        logger.info(
+            "Skysmart AUTH: отправляем запрос"
+        )
 
         async with self.session.post(
             SKYSMART_AUTH_URL,
-            headers=headers,
+            headers=headers
         ) as response:
 
             logger.info(
                 "Skysmart AUTH STATUS: %s",
-                response.status,
+                response.status
             )
 
             text = await response.text()
 
             if response.status != 200:
+
                 logger.error(
                     "Skysmart AUTH ERROR: %s",
-                    text[:1000],
+                    text[:1000]
                 )
 
                 raise Exception(
-                    f"Authentication failed with status: "
-                    f"{response.status}"
+                    "Authentication failed "
+                    f"with status: {response.status}"
                 )
 
             try:
                 data = json.loads(text)
+
             except Exception:
+
                 raise Exception(
-                    "Skysmart AUTH: сервер вернул "
-                    "не JSON"
+                    "Skysmart AUTH: "
+                    "сервер вернул не JSON"
                 )
 
             self.token = (
@@ -338,8 +350,10 @@ class SkysmartAPIClient:
             )
 
             if not self.token:
+
                 raise Exception(
-                    "Skysmart AUTH: JWT token не найден"
+                    "Skysmart AUTH: "
+                    "JWT token не найден"
                 )
 
             logger.info(
@@ -347,60 +361,71 @@ class SkysmartAPIClient:
             )
 
     async def _get_headers(self):
+
         if not self.token:
             await self.authenticate()
 
         return {
             "Connection": "keep-alive",
             "Content-Type": "application/json",
+
             "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "Mozilla/5.0 "
+                "(Windows NT 10.0; Win64; x64) "
                 "AppleWebKit/537.36 "
                 "(KHTML, like Gecko) "
-                "Chrome/153.0.0.0 Safari/537.36"
+                "Chrome/153.0.0.0 "
+                "Safari/537.36"
             ),
+
             "Accept": (
-                "application/json, text/plain, */*"
+                "application/json, "
+                "text/plain, */*"
             ),
-            "Authorization": f"Bearer {self.token}",
+
+            "Authorization": (
+                f"Bearer {self.token}"
+            ),
         }
 
-    async def get_room(self, task_hash: str):
+    async def get_room(self, task_hash):
+
         await self._ensure_session()
 
         payload = {
-            "taskHash": task_hash,
+            "taskHash": task_hash
         }
 
         headers = await self._get_headers()
 
         logger.info(
             "Skysmart get_room: %s",
-            task_hash,
+            task_hash
         )
 
         async with self.session.post(
             SKYSMART_ROOM_URL,
             headers=headers,
-            json=payload,
+            json=payload
         ) as response:
 
             logger.info(
                 "Skysmart get_room STATUS: %s",
-                response.status,
+                response.status
             )
 
             text = await response.text()
 
             if response.status != 200:
+
                 logger.error(
                     "get_room ERROR: %s",
-                    text[:1000],
+                    text[:1000]
                 )
 
                 raise Exception(
-                    f"get_room failed with status: "
-                    f"{response.status}"
+                    "get_room failed "
+                    f"with status: {response.status}"
                 )
 
             data = json.loads(text)
@@ -412,6 +437,7 @@ class SkysmartAPIClient:
             )
 
             if not step_uuids:
+
                 step_uuids = (
                     data
                     .get("data", {})
@@ -419,19 +445,21 @@ class SkysmartAPIClient:
                 )
 
             if not step_uuids:
+
                 raise Exception(
-                    "В ответе Skysmart не найдены "
-                    "stepUuids"
+                    "В ответе Skysmart "
+                    "не найдены stepUuids"
                 )
 
             logger.info(
                 "Найдено заданий: %s",
-                len(step_uuids),
+                len(step_uuids)
             )
 
             return step_uuids
 
-    async def get_task_html(self, uuid: str):
+    async def get_task_html(self, uuid):
+
         await self._ensure_session()
 
         headers = await self._get_headers()
@@ -440,31 +468,36 @@ class SkysmartAPIClient:
 
         async with self.session.get(
             url,
-            headers=headers,
+            headers=headers
         ) as response:
 
             if response.status != 200:
+
                 text = await response.text()
 
                 logger.error(
                     "get_task_html ERROR %s: %s",
                     response.status,
-                    text[:500],
+                    text[:500]
                 )
 
                 raise Exception(
-                    f"get_task_html failed with status: "
-                    f"{response.status}"
+                    "get_task_html failed "
+                    f"with status: {response.status}"
                 )
 
             data = await response.json()
 
-            content = data.get("content", "")
+            content = data.get(
+                "content",
+                ""
+            )
 
             if not content:
+
                 logger.warning(
                     "Пустой content для UUID %s",
-                    uuid,
+                    uuid
                 )
 
             return content
@@ -474,49 +507,48 @@ class SkysmartAPIClient:
 # TEXT HELPERS
 # ============================================================
 
-def remove_extra_newlines(text: str) -> str:
+def remove_extra_newlines(text):
+
     if not text:
         return ""
 
     return re.sub(
         r"\n+",
         "\n",
-        text.strip(),
+        text.strip()
     )
 
 
-def clean_answer_text(text: str) -> str:
-    """
-    Минимальная очистка ответа.
-
-    Важно:
-    математические выражения не переписываем,
-    регистр не меняем.
-    """
+def clean_answer_text(text):
 
     if text is None:
         return ""
 
-    text = str(text)
+    return (
+        str(text)
+        .replace("\xa0", " ")
+        .strip()
+    )
 
-    text = text.replace("\xa0", " ")
 
-    return text.strip()
+def decode_base64_text(value):
 
-
-def decode_base64_text(value: str):
     if not value:
         return None
 
     try:
+
         return base64.b64decode(
             value
         ).decode("utf-8")
+
     except Exception as e:
+
         logger.warning(
             "Ошибка base64 decode: %s",
-            e,
+            e
         )
+
         return None
 
 
@@ -524,13 +556,14 @@ def decode_base64_text(value: str):
 # ROOM NAME
 # ============================================================
 
-def extract_room_name(text: str):
+def extract_room_name(text):
+
     if not text:
         return None
 
     match = re.search(
         r"edu\.skysmart\.ru/student/([^/?#]+)",
-        text,
+        text
     )
 
     if match:
@@ -540,16 +573,13 @@ def extract_room_name(text: str):
 
 
 # ============================================================
-# DIAGNOSTICS
+# DEBUG TASK STRUCTURE
 # ============================================================
 
-def log_task_structure(soup: BeautifulSoup, task_number: int):
-    """
-    Показывает в Render, какие Skysmart-компоненты
-    реально присутствуют внутри задания.
-
-    Особенно полезно, если answers == [].
-    """
+def log_task_structure(
+    soup,
+    task_number
+):
 
     tags = [
         "vim-test-item",
@@ -576,7 +606,10 @@ def log_task_structure(soup: BeautifulSoup, task_number: int):
     found = {}
 
     for tag in tags:
-        count = len(soup.find_all(tag))
+
+        count = len(
+            soup.find_all(tag)
+        )
 
         if count:
             found[tag] = count
@@ -584,7 +617,7 @@ def log_task_structure(soup: BeautifulSoup, task_number: int):
     logger.info(
         "TASK %s STRUCTURE: %s",
         task_number,
-        found,
+        found
     )
 
 
@@ -592,24 +625,27 @@ def log_task_structure(soup: BeautifulSoup, task_number: int):
 # QUESTION
 # ============================================================
 
-def extract_task_question(soup: BeautifulSoup):
+def extract_task_question(soup):
+
     instruction = soup.find(
         "vim-instruction"
     )
 
     if instruction:
+
         return instruction.get_text(
             " ",
-            strip=True,
+            strip=True
         )
 
     return ""
 
 
-def extract_task_full_question(soup: BeautifulSoup):
+def extract_task_full_question(soup):
+
     soup_copy = BeautifulSoup(
         str(soup),
-        "html.parser",
+        "html.parser"
     )
 
     elements_to_exclude = [
@@ -635,59 +671,45 @@ def extract_task_full_question(soup: BeautifulSoup):
     for element in soup_copy.find_all(
         elements_to_exclude
     ):
+
         element.decompose()
 
     return remove_extra_newlines(
-        soup_copy.get_text("\n")
+        soup_copy.get_text(
+            "\n"
+        )
     )
 
 
 # ============================================================
-# ANSWER EXTRACTION
+# EXTRACT ANSWERS
 # ============================================================
 
 def extract_task_answer(
-    soup: BeautifulSoup,
-    task_number: int,
+    soup,
+    task_number
 ):
-    """
-    Извлекает ответы из HTML задания.
-
-    Логика максимально приближена к SkyAnswers._get_task_answer()
-    из рабочего skysmart-answers.
-
-    Дополнительно сохранены расширенные типы заданий.
-    """
 
     answers = []
 
-    # --------------------------------------------------------
-    # DIAGNOSTICS
-    # --------------------------------------------------------
-
     log_task_structure(
         soup,
-        task_number,
+        task_number
     )
 
     # --------------------------------------------------------
-    # 1. MULTIPLE CHOICE
-    # SkyAnswers:
-    #
-    # soup.find_all(
-    #     'vim-test-item',
-    #     attrs={'correct': 'true'}
-    # )
+    # vim-test-item
     # --------------------------------------------------------
 
     for item in soup.find_all(
         "vim-test-item",
-        attrs={"correct": "true"},
+        attrs={"correct": "true"}
     ):
+
         text = clean_answer_text(
             item.get_text(
                 " ",
-                strip=True,
+                strip=True
             )
         )
 
@@ -695,16 +717,17 @@ def extract_task_answer(
             answers.append(text)
 
     # --------------------------------------------------------
-    # 2. ORDER SENTENCE
+    # vim-order-sentence-verify-item
     # --------------------------------------------------------
 
     for item in soup.find_all(
         "vim-order-sentence-verify-item"
     ):
+
         text = clean_answer_text(
             item.get_text(
                 " ",
-                strip=True,
+                strip=True
             )
         )
 
@@ -712,23 +735,23 @@ def extract_task_answer(
             answers.append(text)
 
     # --------------------------------------------------------
-    # 3. INPUT ANSWERS
-    # SkyAnswers сначала ищет vim-input-answers,
-    # затем vim-input-item.
+    # vim-input-answers
     # --------------------------------------------------------
 
     for input_answer in soup.find_all(
         "vim-input-answers"
     ):
+
         input_item = input_answer.find(
             "vim-input-item"
         )
 
         if input_item:
+
             text = clean_answer_text(
                 input_item.get_text(
                     " ",
-                    strip=True,
+                    strip=True
                 )
             )
 
@@ -736,18 +759,22 @@ def extract_task_answer(
                 answers.append(text)
 
     # --------------------------------------------------------
-    # Дополнительный вариант:
-    # если vim-input-item есть напрямую.
+    # Если vim-input-answers нет,
+    # пробуем обычные vim-input-item
     # --------------------------------------------------------
 
-    if not soup.find("vim-input-answers"):
+    if not soup.find(
+        "vim-input-answers"
+    ):
+
         for input_item in soup.find_all(
             "vim-input-item"
         ):
+
             text = clean_answer_text(
                 input_item.get_text(
                     " ",
-                    strip=True,
+                    strip=True
                 )
             )
 
@@ -755,17 +782,18 @@ def extract_task_answer(
                 answers.append(text)
 
     # --------------------------------------------------------
-    # 4. SELECT ITEMS
+    # vim-select-item
     # --------------------------------------------------------
 
     for select_item in soup.find_all(
         "vim-select-item",
-        attrs={"correct": "true"},
+        attrs={"correct": "true"}
     ):
+
         text = clean_answer_text(
             select_item.get_text(
                 " ",
-                strip=True,
+                strip=True
             )
         )
 
@@ -773,36 +801,39 @@ def extract_task_answer(
             answers.append(text)
 
     # --------------------------------------------------------
-    # 5. TEST IMAGE ITEMS
+    # vim-test-image-item
     # --------------------------------------------------------
 
     for image_item in soup.find_all(
         "vim-test-image-item",
-        attrs={"correct": "true"},
+        attrs={"correct": "true"}
     ):
+
         text = clean_answer_text(
             image_item.get_text(
                 " ",
-                strip=True,
+                strip=True
             )
         )
 
         if text:
+
             answers.append(
                 f"{text} - Correct"
             )
 
     # --------------------------------------------------------
-    # 6. MATH INPUT ANSWERS
+    # math-input-answer
     # --------------------------------------------------------
 
     for math_answer in soup.find_all(
         "math-input-answer"
     ):
+
         text = clean_answer_text(
             math_answer.get_text(
                 " ",
-                strip=True,
+                strip=True
             )
         )
 
@@ -810,14 +841,16 @@ def extract_task_answer(
             answers.append(text)
 
     # --------------------------------------------------------
-    # 7. DND TEXT
+    # vim-dnd-text
     # --------------------------------------------------------
 
     for drop in soup.find_all(
         "vim-dnd-text-drop"
     ):
-        drag_ids_raw = (
-            drop.get("drag-ids", "")
+
+        drag_ids_raw = drop.get(
+            "drag-ids",
+            ""
         )
 
         drag_ids = [
@@ -827,18 +860,20 @@ def extract_task_answer(
         ]
 
         for drag_id in drag_ids:
+
             drag = soup.find(
                 "vim-dnd-text-drag",
                 attrs={
                     "answer-id": drag_id
-                },
+                }
             )
 
             if drag:
+
                 text = clean_answer_text(
                     drag.get_text(
                         " ",
-                        strip=True,
+                        strip=True
                     )
                 )
 
@@ -846,12 +881,13 @@ def extract_task_answer(
                     answers.append(text)
 
     # --------------------------------------------------------
-    # 8. DND GROUPS
+    # vim-dnd-group
     # --------------------------------------------------------
 
     for drag_group in soup.find_all(
         "vim-dnd-group-drag"
     ):
+
         answer_id = drag_group.get(
             "answer-id"
         )
@@ -859,18 +895,17 @@ def extract_task_answer(
         drag_group_text = clean_answer_text(
             drag_group.get_text(
                 " ",
-                strip=True,
+                strip=True
             )
         )
 
         for group_item in soup.find_all(
             "vim-dnd-group-item"
         ):
-            drag_ids_raw = (
-                group_item.get(
-                    "drag-ids",
-                    "",
-                )
+
+            drag_ids_raw = group_item.get(
+                "drag-ids",
+                ""
             )
 
             drag_ids = [
@@ -880,39 +915,47 @@ def extract_task_answer(
             ]
 
             if answer_id in drag_ids:
+
                 group_text = clean_answer_text(
                     group_item.get_text(
                         " ",
-                        strip=True,
+                        strip=True
                     )
                 )
 
                 if group_text:
+
                     answers.append(
                         f"{group_text} - "
                         f"{drag_group_text}"
                     )
 
     # --------------------------------------------------------
-    # 9. GROUP ROWS
+    # vim-groups-row
     # --------------------------------------------------------
 
     for group_row in soup.find_all(
         "vim-groups-row"
     ):
+
         for group_item in group_row.find_all(
             "vim-groups-item"
         ):
+
             encoded_text = group_item.get(
                 "text"
             )
 
             if encoded_text:
-                decoded_text = decode_base64_text(
-                    encoded_text
+
+                decoded_text = (
+                    decode_base64_text(
+                        encoded_text
+                    )
                 )
 
                 if decoded_text:
+
                     answers.append(
                         clean_answer_text(
                             decoded_text
@@ -920,17 +963,18 @@ def extract_task_answer(
                     )
 
     # --------------------------------------------------------
-    # 10. STRIKE OUT
+    # vim-strike-out-item
     # --------------------------------------------------------
 
     for striked_item in soup.find_all(
         "vim-strike-out-item",
-        attrs={"striked": "true"},
+        attrs={"striked": "true"}
     ):
+
         text = clean_answer_text(
             striked_item.get_text(
                 " ",
-                strip=True,
+                strip=True
             )
         )
 
@@ -938,12 +982,13 @@ def extract_task_answer(
             answers.append(text)
 
     # --------------------------------------------------------
-    # 11. DND IMAGE SET
+    # vim-dnd-image-set
     # --------------------------------------------------------
 
     for image_drag in soup.find_all(
         "vim-dnd-image-set-drag"
     ):
+
         answer_id = image_drag.get(
             "answer-id"
         )
@@ -951,16 +996,17 @@ def extract_task_answer(
         drag_text = clean_answer_text(
             image_drag.get_text(
                 " ",
-                strip=True,
+                strip=True
             )
         )
 
         for image_drop in soup.find_all(
             "vim-dnd-image-set-drop"
         ):
+
             drag_ids_raw = image_drop.get(
                 "drag-ids",
-                "",
+                ""
             )
 
             drag_ids = [
@@ -982,22 +1028,26 @@ def extract_task_answer(
                 )
 
                 if image_value:
+
                     answers.append(
                         f"{image_value} - "
                         f"{drag_text}"
                     )
+
                 elif drag_text:
+
                     answers.append(
                         drag_text
                     )
 
     # --------------------------------------------------------
-    # 12. DND IMAGES
+    # vim-dnd-image
     # --------------------------------------------------------
 
     for image_drag in soup.find_all(
         "vim-dnd-image-drag"
     ):
+
         answer_id = image_drag.get(
             "answer-id"
         )
@@ -1005,16 +1055,17 @@ def extract_task_answer(
         drag_text = clean_answer_text(
             image_drag.get_text(
                 " ",
-                strip=True,
+                strip=True
             )
         )
 
         for image_drop in soup.find_all(
             "vim-dnd-image-drop"
         ):
+
             drag_ids_raw = image_drop.get(
                 "drag-ids",
-                "",
+                ""
             )
 
             drag_ids = [
@@ -1024,96 +1075,105 @@ def extract_task_answer(
             ]
 
             if answer_id in drag_ids:
+
                 drop_text = clean_answer_text(
                     image_drop.get_text(
                         " ",
-                        strip=True,
+                        strip=True
                     )
                 )
 
-                if drop_text and drag_text:
+                if (
+                    drop_text
+                    and drag_text
+                ):
+
                     answers.append(
                         f"{drop_text} - "
                         f"{drag_text}"
                     )
+
                 elif drag_text:
+
                     answers.append(
                         drag_text
                     )
+
                 elif drop_text:
+
                     answers.append(
                         drop_text
                     )
 
     # --------------------------------------------------------
-    # 13. OPEN ANSWER
+    # edu-open-answer
     # --------------------------------------------------------
 
     if soup.find(
         "edu-open-answer",
-        attrs={"id": "OA1"},
+        attrs={"id": "OA1"}
     ):
+
         answers.append(
             "File upload required"
         )
 
-    # --------------------------------------------------------
-    # DEDUPLICATION
+    # ========================================================
+    # ВАЖНО:
     #
-    # Важно: порядок сохраняем.
-    # --------------------------------------------------------
-
-    unique_answers = []
-
-    for answer in answers:
-        if answer not in unique_answers:
-            unique_answers.append(answer)
-
-    answers = unique_answers
-
-    # --------------------------------------------------------
-    # RESULT LOG
-    # --------------------------------------------------------
+    # ЗДЕСЬ НЕТ УДАЛЕНИЯ ДУБЛИКАТОВ.
+    #
+    # Повторяющиеся ответы являются частью структуры задания.
+    #
+    # Например:
+    #
+    # ["48", "-34", "48", "-34", "48", "-34"]
+    #
+    # должны остаться именно так.
+    # ========================================================
 
     logger.info(
         "TASK %s ANSWERS COUNT: %s",
         task_number,
-        len(answers),
+        len(answers)
     )
 
     logger.info(
         "TASK %s ANSWERS: %s",
         task_number,
-        answers,
+        answers
     )
 
     if not answers:
+
         logger.warning(
             "TASK %s: answers=[]",
-            task_number,
+            task_number
         )
 
-        # Небольшая диагностика содержимого.
         text_preview = soup.get_text(
             " ",
-            strip=True,
+            strip=True
         )
 
         logger.warning(
             "TASK %s TEXT PREVIEW: %s",
             task_number,
-            text_preview[:1000],
+            text_preview[:1000]
         )
 
     return {
         "question": extract_task_question(
             soup
         ),
+
         "full_question": extract_task_full_question(
             soup
         ),
+
         "answers": answers,
-        "task_number": task_number,
+
+        "task_number": task_number
     }
 
 
@@ -1121,31 +1181,27 @@ def extract_task_answer(
 # LOAD ALL TASKS
 # ============================================================
 
-async def load_all_tasks(
-    room_name: str,
-):
+async def load_all_tasks(room_name):
+
     client = SkysmartAPIClient()
 
     try:
+
         step_uuids = await client.get_room(
             room_name
         )
 
         logger.info(
             "Получено step UUID: %s",
-            len(step_uuids),
+            len(step_uuids)
         )
-
-        # ----------------------------------------------------
-        # Получаем HTML параллельно
-        # ----------------------------------------------------
 
         tasks_html = await asyncio.gather(
             *[
                 client.get_task_html(uuid)
                 for uuid in step_uuids
             ],
-            return_exceptions=True,
+            return_exceptions=True
         )
 
         result = []
@@ -1153,100 +1209,94 @@ async def load_all_tasks(
         for index, task_html in enumerate(
             tasks_html
         ):
+
             task_number = index + 1
+
+            # ------------------------------------------------
+            # Ошибка отдельного задания
+            # ------------------------------------------------
 
             if isinstance(
                 task_html,
-                Exception,
+                Exception
             ):
+
                 logger.error(
                     "TASK %s ERROR: %s",
                     task_number,
-                    task_html,
+                    task_html
                 )
 
                 result.append({
                     "question": "",
                     "full_question": "",
                     "answers": [],
-                    "task_number": task_number,
+                    "task_number": task_number
                 })
 
                 continue
+
+            # ------------------------------------------------
+            # Пустой HTML
+            # ------------------------------------------------
 
             if not task_html:
+
                 logger.warning(
                     "TASK %s: пустой HTML",
-                    task_number,
+                    task_number
                 )
 
                 result.append({
                     "question": "",
                     "full_question": "",
                     "answers": [],
-                    "task_number": task_number,
+                    "task_number": task_number
                 })
 
                 continue
+
+            # ------------------------------------------------
+            # Parse HTML
+            # ------------------------------------------------
 
             soup = BeautifulSoup(
                 task_html,
-                "html.parser",
+                "html.parser"
             )
 
-            task_answer = extract_task_answer(
+            task_result = extract_task_answer(
                 soup,
-                task_number,
+                task_number
             )
 
             result.append(
-                task_answer
+                task_result
             )
 
         return result
 
     finally:
+
         await client.close()
 
 
 # ============================================================
-# SYNCHRONOUS WRAPPER
+# SYNC WRAPPER
 # ============================================================
 
-def get_skysmart_answers(
-    room_name: str,
-):
+def get_skysmart_answers(room_name):
+
     return asyncio.run(
         load_all_tasks(room_name)
     )
 
 
 # ============================================================
-# BUILD ANSWER ARRAY
+# BUILD FINAL ANSWERS
 # ============================================================
 
 def build_all_tasks_answers(data):
-    """
-    Преобразует:
-
-    [
-        {
-            "task_number": 1,
-            "answers": [...]
-        },
-        ...
-    ]
-
-    в:
-
-    [
-        [...],
-        [...],
-        ...
-    ]
-
-    Порядок заданий сохраняется.
-    """
 
     if not data:
         return []
@@ -1254,16 +1304,22 @@ def build_all_tasks_answers(data):
     result = []
 
     for task in data:
+
         answers = task.get(
             "answers",
-            [],
+            []
         )
 
         if not isinstance(
             answers,
-            list,
+            list
         ):
+
             answers = []
+
+        # ВАЖНО:
+        # здесь тоже ничего не удаляем
+        # и не сортируем.
 
         result.append(
             answers
@@ -1273,27 +1329,29 @@ def build_all_tasks_answers(data):
 
 
 # ============================================================
-# FORMAT
+# FORMAT JSON
 # ============================================================
 
 def format_all_tasks_answers(
-    answers,
+    answers
 ):
+
     return json.dumps(
         answers,
         ensure_ascii=False,
-        indent=2,
+        indent=2
     )
 
 
 # ============================================================
-# TELEGRAM COMMANDS
+# /START
 # ============================================================
 
 async def start_command(
     update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
+    context: ContextTypes.DEFAULT_TYPE
 ):
+
     user = update.effective_user
 
     if not user:
@@ -1304,6 +1362,7 @@ async def start_command(
     create_user(user_id)
 
     if authorize_user(user_id):
+
         user_states[user_id] = {
             "state": "waiting_link"
         }
@@ -1311,7 +1370,7 @@ async def start_command(
         await update.message.reply_text(
             "✅ Вы авторизованы.\n\n"
             "Отправьте ссылку на задание Skysmart.",
-            reply_markup=MAIN_KEYBOARD,
+            reply_markup=MAIN_KEYBOARD
         )
 
         return
@@ -1322,57 +1381,74 @@ async def start_command(
 
     await update.message.reply_text(
         "🔐 Введите пароль доступа:",
-        reply_markup=MAIN_KEYBOARD,
+        reply_markup=MAIN_KEYBOARD
     )
 
 
+# ============================================================
+# /ID
+# ============================================================
+
 async def id_command(
     update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
+    context: ContextTypes.DEFAULT_TYPE
 ):
+
     if not update.effective_user:
         return
 
     await update.message.reply_text(
         f"🆔 Ваш Telegram ID:\n"
         f"`{update.effective_user.id}`",
-        parse_mode="Markdown",
+        parse_mode="Markdown"
     )
 
 
+# ============================================================
+# /KEYS
+# ============================================================
+
 async def keys_command(
     update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
+    context: ContextTypes.DEFAULT_TYPE
 ):
+
     if not update.effective_user:
         return
 
     if update.effective_user.id != OWNER_ID:
+
         await update.message.reply_text(
             "⛔ Нет доступа."
         )
+
         return
 
     result = (
         supabase
         .table("bot_passwords")
-        .select("password_hash, used")
+        .select(
+            "password_hash, used"
+        )
         .eq("used", False)
         .execute()
     )
 
     if not result.data:
+
         await update.message.reply_text(
             "Свободных ключей нет."
         )
+
         return
 
     lines = [
         "🔑 Хэши неиспользованных ключей:",
-        "",
+        ""
     ]
 
     for item in result.data:
+
         lines.append(
             item["password_hash"]
         )
@@ -1388,8 +1464,9 @@ async def keys_command(
 
 async def message_handler(
     update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
+    context: ContextTypes.DEFAULT_TYPE
 ):
+
     if not update.message:
         return
 
@@ -1406,14 +1483,16 @@ async def message_handler(
     ).strip()
 
     # --------------------------------------------------------
-    # MY ID
+    # ID
     # --------------------------------------------------------
 
     if text == "🆔 Мой ID":
+
         await id_command(
             update,
-            context,
+            context
         )
+
         return
 
     # --------------------------------------------------------
@@ -1426,12 +1505,15 @@ async def message_handler(
     # AUTH
     # --------------------------------------------------------
 
-    if not authorize_user(user_id):
+    if not authorize_user(
+        user_id
+    ):
 
         if check_password(text):
+
             mark_password_used(
                 text,
-                user_id,
+                user_id
             )
 
             set_user_authorized(
@@ -1444,9 +1526,9 @@ async def message_handler(
 
             await update.message.reply_text(
                 "✅ Пароль принят.\n\n"
-                "Теперь отправьте ссылку на "
-                "задание Skysmart.",
-                reply_markup=MAIN_KEYBOARD,
+                "Теперь отправьте ссылку "
+                "на задание Skysmart.",
+                reply_markup=MAIN_KEYBOARD
             )
 
             return
@@ -1459,16 +1541,18 @@ async def message_handler(
         return
 
     # --------------------------------------------------------
-    # BUTTON
+    # GET ANSWERS BUTTON
     # --------------------------------------------------------
 
     if text == "📚 Получить ответы":
+
         user_states[user_id] = {
             "state": "waiting_link"
         }
 
         await update.message.reply_text(
-            "🔗 Отправьте ссылку на задание Skysmart."
+            "🔗 Отправьте ссылку "
+            "на задание Skysmart."
         )
 
         return
@@ -1481,17 +1565,18 @@ async def message_handler(
         text
     )
 
+    # Можно также отправить сам roomName
     if not room_name:
 
-        # Иногда пользователь может отправить
-        # только roomName.
         if re.fullmatch(
             r"[A-Za-z0-9_-]+",
-            text,
+            text
         ):
+
             room_name = text
 
     if not room_name:
+
         await update.message.reply_text(
             "❌ Не удалось найти roomName.\n\n"
             "Отправьте ссылку вида:\n"
@@ -1504,15 +1589,23 @@ async def message_handler(
     # LOADING
     # --------------------------------------------------------
 
-    loading_message = await update.message.reply_text(
-        "⏳ Получаю задания и ответы с Skysmart..."
+    loading_message = (
+        await update.message.reply_text(
+            "⏳ Получаю задания и ответы "
+            "с Skysmart..."
+        )
     )
 
     try:
+
         data = await asyncio.to_thread(
             get_skysmart_answers,
-            room_name,
+            room_name
         )
+
+        # ----------------------------------------------------
+        # BUILD ANSWERS
+        # ----------------------------------------------------
 
         all_tasks_answers = (
             build_all_tasks_answers(
@@ -1520,15 +1613,21 @@ async def message_handler(
             )
         )
 
-        output = format_all_tasks_answers(
-            all_tasks_answers
+        # ----------------------------------------------------
+        # FORMAT
+        # ----------------------------------------------------
+
+        output = (
+            format_all_tasks_answers(
+                all_tasks_answers
+            )
         )
 
         if not output:
             output = "[]"
 
         # ----------------------------------------------------
-        # SEND CHUNKS
+        # Telegram message limit
         # ----------------------------------------------------
 
         max_length = 3900
@@ -1538,7 +1637,7 @@ async def message_handler(
             for i in range(
                 0,
                 len(output),
-                max_length,
+                max_length
             )
         ]
 
@@ -1547,44 +1646,53 @@ async def message_handler(
         )
 
         for chunk in chunks:
+
             await update.message.reply_text(
-                f"```json\n{chunk}\n```",
-                parse_mode="Markdown",
+                f"```json\n"
+                f"{chunk}\n"
+                f"```",
+                parse_mode="Markdown"
             )
 
     except Exception as e:
+
         logger.exception(
             "Ошибка получения ответов"
         )
 
         try:
+
             await loading_message.edit_text(
                 "❌ Не удалось получить ответы."
             )
+
         except Exception:
             pass
 
         await update.message.reply_text(
-            "Подробность ошибки записана в Render Logs."
+            "Подробность ошибки записана "
+            "в Render Logs."
         )
 
 
 # ============================================================
-# WEBHOOK
+# TELEGRAM WEBHOOK
 # ============================================================
 
 telegram_app = None
 
 
 async def telegram_webhook(
-    request: Request,
+    request: Request
 ):
+
     try:
+
         data = await request.json()
 
         update = Update.de_json(
             data,
-            telegram_app.bot,
+            telegram_app.bot
         )
 
         await telegram_app.process_update(
@@ -1596,17 +1704,18 @@ async def telegram_webhook(
         })
 
     except Exception as e:
+
         logger.exception(
             "Ошибка webhook: %s",
-            e,
+            e
         )
 
         return JSONResponse(
             {
                 "ok": False,
-                "error": str(e),
+                "error": str(e)
             },
-            status_code=500,
+            status_code=500
         )
 
 
@@ -1615,42 +1724,51 @@ async def telegram_webhook(
 # ============================================================
 
 async def health(
-    request: Request,
+    request: Request
 ):
+
     return PlainTextResponse(
         "OK"
     )
 
 
+# ============================================================
+# ROOT
+# ============================================================
+
 async def root(
-    request: Request,
+    request: Request
 ):
+
     return PlainTextResponse(
         "Skysmart Telegram Bot is running"
     )
 
 
 # ============================================================
-# STARLETTE
+# ROUTES
 # ============================================================
 
 routes = [
     Route(
         "/",
         root,
-        methods=["GET"],
+        methods=["GET"]
     ),
+
     Route(
         "/health",
         health,
-        methods=["GET"],
+        methods=["GET"]
     ),
+
     Route(
         WEBHOOK_PATH,
         telegram_webhook,
-        methods=["POST"],
+        methods=["POST"]
     ),
 ]
+
 
 app = Starlette(
     routes=routes
@@ -1658,10 +1776,11 @@ app = Starlette(
 
 
 # ============================================================
-# TELEGRAM STARTUP
+# STARTUP
 # ============================================================
 
 async def startup():
+
     global telegram_app
 
     logger.info(
@@ -1669,7 +1788,8 @@ async def startup():
     )
 
     telegram_app = (
-        Application.builder()
+        Application
+        .builder()
         .token(BOT_TOKEN)
         .build()
     )
@@ -1677,33 +1797,33 @@ async def startup():
     telegram_app.add_handler(
         CommandHandler(
             "start",
-            start_command,
+            start_command
         )
     )
 
     telegram_app.add_handler(
         CommandHandler(
             "id",
-            id_command,
+            id_command
         )
     )
 
     telegram_app.add_handler(
         CommandHandler(
             "keys",
-            keys_command,
+            keys_command
         )
     )
 
     telegram_app.add_handler(
         MessageHandler(
-            filters.TEXT
-            & ~filters.COMMAND,
-            message_handler,
+            filters.TEXT & ~filters.COMMAND,
+            message_handler
         )
     )
 
     await telegram_app.initialize()
+
     await telegram_app.start()
 
     webhook_url = (
@@ -1713,7 +1833,7 @@ async def startup():
 
     logger.info(
         "Устанавливаем Telegram webhook: %s",
-        webhook_url,
+        webhook_url
     )
 
     await telegram_app.bot.set_webhook(
@@ -1721,8 +1841,8 @@ async def startup():
         allowed_updates=[
             "message",
             "edited_message",
-            "callback_query",
-        ],
+            "callback_query"
+        ]
     )
 
     logger.info(
@@ -1730,39 +1850,52 @@ async def startup():
     )
 
 
+# ============================================================
+# SHUTDOWN
+# ============================================================
+
 async def shutdown():
+
     global telegram_app
 
     if telegram_app:
+
         try:
             await telegram_app.stop()
+
         except Exception:
             pass
 
         try:
             await telegram_app.shutdown()
+
         except Exception:
             pass
 
 
+# ============================================================
+# EVENTS
+# ============================================================
+
 app.add_event_handler(
     "startup",
-    startup,
+    startup
 )
 
 app.add_event_handler(
     "shutdown",
-    shutdown,
+    shutdown
 )
 
 
 # ============================================================
-# LOCAL ENTRY POINT
+# RUN
 # ============================================================
 
 if __name__ == "__main__":
+
     uvicorn.run(
         app,
         host="0.0.0.0",
-        port=PORT,
+        port=PORT
     )
