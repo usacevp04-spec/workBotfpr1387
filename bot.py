@@ -6,9 +6,13 @@ import hashlib
 import secrets
 import logging
 import asyncio
+import base64
 
 import requests
+import aiohttp
 import uvicorn
+
+from bs4 import BeautifulSoup
 
 from datetime import datetime, timezone
 
@@ -18,9 +22,20 @@ from starlette.responses import PlainTextResponse, JSONResponse
 from starlette.routing import Route
 
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
-from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    MessageHandler,
+    ContextTypes,
+    filters,
+)
+
 from supabase import create_client
 
+
+# ============================================================
+# ENV
+# ============================================================
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 RENDER_URL = os.getenv("RENDER_URL")
@@ -30,7 +45,7 @@ OWNER_ID = os.getenv("OWNER_ID")
 PORT = int(os.getenv("PORT", "10000"))
 
 WEBHOOK_PATH = "/telegram"
-SKYSMART_API_URL = "https://skysmart-answers.vercel.app/get_answers/"
+
 
 logging.basicConfig(
     level=logging.INFO,
@@ -38,6 +53,7 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger("skysmart_bot")
+
 
 required_env = {
     "BOT_TOKEN": BOT_TOKEN,
@@ -48,7 +64,8 @@ required_env = {
 }
 
 missing_env = [
-    name for name, value in required_env.items()
+    name
+    for name, value in required_env.items()
     if not value
 ]
 
@@ -64,12 +81,877 @@ supabase = create_client(
     SUPABASE_SERVICE_KEY
 )
 
+
 user_states = {}
 
-PASSWORD_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 
+PASSWORD_ALPHABET = (
+    "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+)
+
+
+# ============================================================
+# SKYSMART API
+# ============================================================
+
+SKYSMART_ROOM_URL = (
+    "https://api-edu.skysmart.ru"
+    "/api/v1/task/preview"
+)
+
+SKYSMART_AUTH_URL = (
+    "https://api-edu.skysmart.ru"
+    "/api/v1/user/registration/teacher"
+)
+
+SKYSMART_STEP_URL = (
+    "https://api-edu.skysmart.ru"
+    "/api/v1/content/step/load?stepUuid="
+)
+
+
+class SkysmartAPIClient:
+
+    def __init__(self):
+
+        self.session = aiohttp.ClientSession()
+
+        self.token = ""
+
+        self.user_agent = (
+            "Mozilla/5.0 "
+            "(Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 "
+            "(KHTML, like Gecko) "
+            "Chrome/153.0.0.0 Safari/537.36"
+        )
+
+    async def close(self):
+
+        if not self.session.closed:
+            await self.session.close()
+
+    async def _authenticate(self):
+
+        headers = {
+            "Connection": "keep-alive",
+            "Content-Type": "application/json",
+            "User-Agent": self.user_agent,
+        }
+
+        logger.info(
+            "Skysmart: выполняю авторизацию"
+        )
+
+        async with self.session.post(
+            SKYSMART_AUTH_URL,
+            headers=headers,
+            timeout=aiohttp.ClientTimeout(
+                total=60
+            ),
+        ) as response:
+
+            if response.status != 200:
+
+                text = await response.text()
+
+                raise RuntimeError(
+                    "Skysmart authentication failed: "
+                    f"HTTP {response.status} "
+                    f"{text[:1000]}"
+                )
+
+            data = await response.json()
+
+            self.token = data.get(
+                "jwtToken",
+                ""
+            )
+
+            if not self.token:
+                raise RuntimeError(
+                    "Skysmart не вернул jwtToken."
+                )
+
+        logger.info(
+            "Skysmart: JWT получен"
+        )
+
+    async def _get_headers(self):
+
+        if not self.token:
+            await self._authenticate()
+
+        return {
+            "Connection": "keep-alive",
+            "Content-Type": "application/json",
+            "User-Agent": self.user_agent,
+            "Accept": (
+                "application/json, "
+                "text/plain, */*"
+            ),
+            "Authorization": (
+                f"Bearer {self.token}"
+            ),
+        }
+
+    async def get_room(
+        self,
+        task_hash
+    ):
+
+        headers = await self._get_headers()
+
+        payload = {
+            "taskHash": task_hash
+        }
+
+        logger.info(
+            "Skysmart: получаю room "
+            "taskHash=%s",
+            task_hash
+        )
+
+        async with self.session.post(
+            SKYSMART_ROOM_URL,
+            headers=headers,
+            json=payload,
+            timeout=aiohttp.ClientTimeout(
+                total=60
+            ),
+        ) as response:
+
+            if response.status != 200:
+
+                text = await response.text()
+
+                raise RuntimeError(
+                    "get_room failed: "
+                    f"HTTP {response.status} "
+                    f"{text[:2000]}"
+                )
+
+            data = await response.json()
+
+        step_uuids = (
+            data
+            .get("meta", {})
+            .get("stepUuids", [])
+        )
+
+        logger.info(
+            "Skysmart: найдено заданий: %s",
+            len(step_uuids)
+        )
+
+        return step_uuids
+
+    async def get_task_html(
+        self,
+        uuid
+    ):
+
+        headers = await self._get_headers()
+
+        url = (
+            SKYSMART_STEP_URL
+            + str(uuid)
+        )
+
+        async with self.session.get(
+            url,
+            headers=headers,
+            timeout=aiohttp.ClientTimeout(
+                total=60
+            ),
+        ) as response:
+
+            if response.status != 200:
+
+                text = await response.text()
+
+                raise RuntimeError(
+                    "get_task_html failed: "
+                    f"HTTP {response.status} "
+                    f"{text[:1000]}"
+                )
+
+            data = await response.json()
+
+        return data.get(
+            "content",
+            ""
+        )
+
+
+# ============================================================
+# TEXT HELPERS
+# ============================================================
+
+def clean_text(text):
+
+    if not text:
+        return ""
+
+    text = (
+        str(text)
+        .replace("\r\n", "\n")
+        .replace("\r", "\n")
+    )
+
+    lines = []
+
+    for line in text.split("\n"):
+
+        line = line.strip()
+
+        if line:
+            lines.append(line)
+
+    return "\n".join(lines).strip()
+
+
+def remove_extra_newlines(text):
+
+    return re.sub(
+        r"\n+",
+        "\n",
+        text.strip()
+    )
+
+
+# ============================================================
+# SKYSMART ANSWER PARSER
+# ============================================================
+
+def extract_task_question(soup):
+
+    instruction = soup.find(
+        "vim-instruction"
+    )
+
+    if not instruction:
+        return ""
+
+    return clean_text(
+        instruction.get_text(
+            " ",
+            strip=True
+        )
+    )
+
+
+def extract_task_full_question(soup):
+
+    soup_copy = BeautifulSoup(
+        str(soup),
+        "html.parser"
+    )
+
+    elements_to_exclude = [
+        "vim-instruction",
+        "vim-groups",
+        "vim-test-item",
+        "vim-order-sentence-verify-item",
+        "vim-input-answers",
+        "vim-select-item",
+        "vim-test-image-item",
+        "math-input-answer",
+        "vim-dnd-text-drop",
+        "vim-dnd-text-drag",
+        "vim-dnd-group-drag",
+        "vim-dnd-group-item",
+        "vim-groups-row",
+        "vim-strike-out-item",
+        "vim-dnd-image-set-drag",
+        "vim-dnd-image-set-drop",
+        "vim-dnd-image-drag",
+        "vim-dnd-image-drop",
+        "edu-open-answer",
+    ]
+
+    for element in soup_copy.find_all(
+        elements_to_exclude
+    ):
+        element.decompose()
+
+    text = soup_copy.get_text(
+        "\n",
+        strip=True
+    )
+
+    return remove_extra_newlines(
+        text
+    )
+
+
+def extract_task_answer(
+    soup,
+    task_number
+):
+
+    answers = []
+
+    # --------------------------------------------------------
+    # 1. Обычный тест
+    # --------------------------------------------------------
+
+    for item in soup.find_all(
+        "vim-test-item",
+        attrs={"correct": "true"}
+    ):
+
+        text = clean_text(
+            item.get_text(
+                " ",
+                strip=True
+            )
+        )
+
+        if text:
+            answers.append(text)
+
+    # --------------------------------------------------------
+    # 2. Упорядочивание предложений
+    # --------------------------------------------------------
+
+    for item in soup.find_all(
+        "vim-order-sentence-verify-item"
+    ):
+
+        text = clean_text(
+            item.get_text(
+                " ",
+                strip=True
+            )
+        )
+
+        if text:
+            answers.append(text)
+
+    # --------------------------------------------------------
+    # 3. Поле ввода
+    # --------------------------------------------------------
+
+    for input_answer in soup.find_all(
+        "vim-input-answers"
+    ):
+
+        input_item = input_answer.find(
+            "vim-input-item"
+        )
+
+        if input_item:
+
+            text = clean_text(
+                input_item.get_text(
+                    " ",
+                    strip=True
+                )
+            )
+
+            if text:
+                answers.append(text)
+
+    # --------------------------------------------------------
+    # 4. Select
+    # --------------------------------------------------------
+
+    for select_item in soup.find_all(
+        "vim-select-item",
+        attrs={"correct": "true"}
+    ):
+
+        text = clean_text(
+            select_item.get_text(
+                " ",
+                strip=True
+            )
+        )
+
+        if text:
+            answers.append(text)
+
+    # --------------------------------------------------------
+    # 5. Выбор изображения
+    # --------------------------------------------------------
+
+    for image_item in soup.find_all(
+        "vim-test-image-item",
+        attrs={"correct": "true"}
+    ):
+
+        text = clean_text(
+            image_item.get_text(
+                " ",
+                strip=True
+            )
+        )
+
+        if text:
+            answers.append(
+                f"{text} - Correct"
+            )
+
+    # --------------------------------------------------------
+    # 6. Математический ответ
+    # --------------------------------------------------------
+
+    for math_answer in soup.find_all(
+        "math-input-answer"
+    ):
+
+        text = clean_text(
+            math_answer.get_text(
+                " ",
+                strip=True
+            )
+        )
+
+        if text:
+            answers.append(text)
+
+    # --------------------------------------------------------
+    # 7. Drag & Drop текста
+    # --------------------------------------------------------
+
+    for drop in soup.find_all(
+        "vim-dnd-text-drop"
+    ):
+
+        drag_ids = [
+            x.strip()
+            for x in drop.get(
+                "drag-ids",
+                ""
+            ).split(",")
+            if x.strip()
+        ]
+
+        for drag_id in drag_ids:
+
+            drag = soup.find(
+                "vim-dnd-text-drag",
+                attrs={
+                    "answer-id": drag_id
+                }
+            )
+
+            if drag:
+
+                text = clean_text(
+                    drag.get_text(
+                        " ",
+                        strip=True
+                    )
+                )
+
+                if text:
+                    answers.append(text)
+
+    # --------------------------------------------------------
+    # 8. Drag & Drop по группам
+    # --------------------------------------------------------
+
+    for drag_group in soup.find_all(
+        "vim-dnd-group-drag"
+    ):
+
+        answer_id = drag_group.get(
+            "answer-id"
+        )
+
+        if not answer_id:
+            continue
+
+        drag_text = clean_text(
+            drag_group.get_text(
+                " ",
+                strip=True
+            )
+        )
+
+        for group_item in soup.find_all(
+            "vim-dnd-group-item"
+        ):
+
+            drag_ids = [
+                x.strip()
+                for x in group_item.get(
+                    "drag-ids",
+                    ""
+                ).split(",")
+                if x.strip()
+            ]
+
+            if answer_id in drag_ids:
+
+                group_text = clean_text(
+                    group_item.get_text(
+                        " ",
+                        strip=True
+                    )
+                )
+
+                if group_text:
+
+                    if drag_text:
+                        answers.append(
+                            f"{group_text} - "
+                            f"{drag_text}"
+                        )
+                    else:
+                        answers.append(
+                            group_text
+                        )
+
+    # --------------------------------------------------------
+    # 9. Base64 группы
+    # --------------------------------------------------------
+
+    for group_row in soup.find_all(
+        "vim-groups-row"
+    ):
+
+        for group_item in group_row.find_all(
+            "vim-groups-item"
+        ):
+
+            encoded_text = group_item.get(
+                "text"
+            )
+
+            if not encoded_text:
+                continue
+
+            try:
+
+                decoded_text = (
+                    base64.b64decode(
+                        encoded_text
+                    )
+                    .decode(
+                        "utf-8"
+                    )
+                )
+
+                decoded_text = clean_text(
+                    decoded_text
+                )
+
+                if decoded_text:
+                    answers.append(
+                        decoded_text
+                    )
+
+            except Exception as e:
+
+                logger.warning(
+                    "Ошибка Base64: %s",
+                    e
+                )
+
+    # --------------------------------------------------------
+    # 10. Зачёркивание
+    # --------------------------------------------------------
+
+    for striked_item in soup.find_all(
+        "vim-strike-out-item",
+        attrs={"striked": "true"}
+    ):
+
+        text = clean_text(
+            striked_item.get_text(
+                " ",
+                strip=True
+            )
+        )
+
+        if text:
+            answers.append(text)
+
+    # --------------------------------------------------------
+    # 11. Drag & Drop изображений
+    # --------------------------------------------------------
+
+    for image_drag in soup.find_all(
+        "vim-dnd-image-set-drag"
+    ):
+
+        answer_id = image_drag.get(
+            "answer-id"
+        )
+
+        if not answer_id:
+            continue
+
+        drag_text = clean_text(
+            image_drag.get_text(
+                " ",
+                strip=True
+            )
+        )
+
+        for image_drop in soup.find_all(
+            "vim-dnd-image-set-drop"
+        ):
+
+            drag_ids = [
+                x.strip()
+                for x in image_drop.get(
+                    "drag-ids",
+                    ""
+                ).split(",")
+                if x.strip()
+            ]
+
+            if answer_id in drag_ids:
+
+                image = clean_text(
+                    image_drop.get(
+                        "image",
+                        ""
+                    )
+                )
+
+                if image and drag_text:
+
+                    answers.append(
+                        f"{image} - "
+                        f"{drag_text}"
+                    )
+
+                elif drag_text:
+
+                    answers.append(
+                        drag_text
+                    )
+
+    # --------------------------------------------------------
+    # 12. Обычный Drag & Drop изображений
+    # --------------------------------------------------------
+
+    for image_drag in soup.find_all(
+        "vim-dnd-image-drag"
+    ):
+
+        answer_id = image_drag.get(
+            "answer-id"
+        )
+
+        if not answer_id:
+            continue
+
+        drag_text = clean_text(
+            image_drag.get_text(
+                " ",
+                strip=True
+            )
+        )
+
+        for image_drop in soup.find_all(
+            "vim-dnd-image-drop"
+        ):
+
+            drag_ids = [
+                x.strip()
+                for x in image_drop.get(
+                    "drag-ids",
+                    ""
+                ).split(",")
+                if x.strip()
+            ]
+
+            if answer_id in drag_ids:
+
+                drop_text = clean_text(
+                    image_drop.get_text(
+                        " ",
+                        strip=True
+                    )
+                )
+
+                if drop_text and drag_text:
+
+                    answers.append(
+                        f"{drop_text} - "
+                        f"{drag_text}"
+                    )
+
+                elif drag_text:
+
+                    answers.append(
+                        drag_text
+                    )
+
+                elif drop_text:
+
+                    answers.append(
+                        drop_text
+                    )
+
+    # --------------------------------------------------------
+    # 13. Открытый ответ
+    # --------------------------------------------------------
+
+    if soup.find(
+        "edu-open-answer",
+        attrs={"id": "OA1"}
+    ):
+
+        answers.append(
+            "File upload required"
+        )
+
+    # --------------------------------------------------------
+    # Удаляем дубликаты
+    # --------------------------------------------------------
+
+    unique_answers = []
+
+    for answer in answers:
+
+        answer = clean_text(answer)
+
+        if not answer:
+            continue
+
+        if answer not in unique_answers:
+            unique_answers.append(answer)
+
+    return {
+        "question": extract_task_question(
+            soup
+        ),
+        "full_question":
+            extract_task_full_question(
+                soup
+            ),
+        "answers": unique_answers,
+        "task_number": task_number,
+    }
+
+
+# ============================================================
+# ТВОЯ ФУНКЦИЯ get_skysmart_answers()
+# СИГНАТУРА СОХРАНЕНА
+# ============================================================
+
+def get_skysmart_answers(room_name):
+
+    async def load():
+
+        client = SkysmartAPIClient()
+
+        try:
+
+            logger.info(
+                "Skysmart: начинаю получение "
+                "комнаты %s",
+                room_name
+            )
+
+            step_uuids = await client.get_room(
+                room_name
+            )
+
+            if not step_uuids:
+                raise RuntimeError(
+                    "Skysmart не вернул задания."
+                )
+
+            logger.info(
+                "Skysmart: UUID заданий: %s",
+                step_uuids
+            )
+
+            # Загружаем все задания параллельно
+            coroutines = [
+                client.get_task_html(uuid)
+                for uuid in step_uuids
+            ]
+
+            html_list = await asyncio.gather(
+                *coroutines,
+                return_exceptions=True
+            )
+
+            result = []
+
+            for index, html in enumerate(
+                html_list,
+                start=1
+            ):
+
+                if isinstance(
+                    html,
+                    Exception
+                ):
+
+                    logger.error(
+                        "Ошибка задания #%s: %s",
+                        index,
+                        html
+                    )
+
+                    continue
+
+                if not html:
+
+                    logger.warning(
+                        "Пустой HTML задания #%s",
+                        index
+                    )
+
+                    continue
+
+                try:
+
+                    soup = BeautifulSoup(
+                        html,
+                        "html.parser"
+                    )
+
+                    task = extract_task_answer(
+                        soup,
+                        index
+                    )
+
+                    result.append(task)
+
+                    logger.info(
+                        "Skysmart: задание #%s "
+                        "-> %s ответов",
+                        index,
+                        len(
+                            task["answers"]
+                        )
+                    )
+
+                except Exception as e:
+
+                    logger.exception(
+                        "Ошибка обработки "
+                        "задания #%s: %s",
+                        index,
+                        e
+                    )
+
+            return result
+
+        finally:
+
+            await client.close()
+
+    return asyncio.run(load())
+
+
+# ============================================================
+# ТВОИ СТАРЫЕ ФУНКЦИИ
+# ============================================================
 
 def password_keyboard():
+
     return ReplyKeyboardMarkup(
         [[KeyboardButton("🆔 Мой ID")]],
         resize_keyboard=True,
@@ -77,6 +959,7 @@ def password_keyboard():
 
 
 def main_keyboard():
+
     return ReplyKeyboardMarkup(
         [
             [KeyboardButton("📚 Получить ответы")],
@@ -87,13 +970,18 @@ def main_keyboard():
 
 
 def generate_password():
+
     part1 = "".join(
-        secrets.choice(PASSWORD_ALPHABET)
+        secrets.choice(
+            PASSWORD_ALPHABET
+        )
         for _ in range(4)
     )
 
     part2 = "".join(
-        secrets.choice(PASSWORD_ALPHABET)
+        secrets.choice(
+            PASSWORD_ALPHABET
+        )
         for _ in range(4)
     )
 
@@ -101,13 +989,16 @@ def generate_password():
 
 
 def hash_password(password):
+
     return hashlib.sha256(
         password.encode("utf-8")
     ).hexdigest()
 
 
 def initialize_passwords():
+
     try:
+
         result = (
             supabase
             .table("bot_passwords")
@@ -116,21 +1007,31 @@ def initialize_passwords():
             .execute()
         )
 
-        current_count = len(result.data or [])
+        current_count = len(
+            result.data or []
+        )
 
         while current_count < 10:
+
             password = generate_password()
-            password_hash = hash_password(password)
+
+            password_hash = hash_password(
+                password
+            )
 
             try:
+
                 (
                     supabase
                     .table("bot_passwords")
                     .insert(
                         {
-                            "password_hash": password_hash,
-                            "password_text": password,
-                            "used": False,
+                            "password_hash":
+                                password_hash,
+                            "password_text":
+                                password,
+                            "used":
+                                False,
                         }
                     )
                     .execute()
@@ -139,25 +1040,34 @@ def initialize_passwords():
                 current_count += 1
 
             except Exception as e:
+
                 logger.error(
                     "Ошибка создания пароля: %s",
                     e
                 )
 
     except Exception as e:
+
         logger.error(
             "Ошибка initialize_passwords: %s",
             e
         )
 
 
-def create_user_if_needed(telegram_id):
+def create_user_if_needed(
+    telegram_id
+):
+
     try:
+
         result = (
             supabase
             .table("bot_users")
             .select("*")
-            .eq("telegram_id", telegram_id)
+            .eq(
+                "telegram_id",
+                telegram_id
+            )
             .execute()
         )
 
@@ -169,8 +1079,10 @@ def create_user_if_needed(telegram_id):
             .table("bot_users")
             .insert(
                 {
-                    "telegram_id": telegram_id,
-                    "authorized": False,
+                    "telegram_id":
+                        telegram_id,
+                    "authorized":
+                        False,
                 }
             )
             .execute()
@@ -180,6 +1092,7 @@ def create_user_if_needed(telegram_id):
             return result.data[0]
 
     except Exception as e:
+
         logger.error(
             "Ошибка create_user_if_needed: %s",
             e
@@ -188,13 +1101,20 @@ def create_user_if_needed(telegram_id):
     return None
 
 
-def is_authorized(telegram_id):
+def is_authorized(
+    telegram_id
+):
+
     try:
+
         result = (
             supabase
             .table("bot_users")
             .select("authorized")
-            .eq("telegram_id", telegram_id)
+            .eq(
+                "telegram_id",
+                telegram_id
+            )
             .execute()
         )
 
@@ -202,10 +1122,13 @@ def is_authorized(telegram_id):
             return False
 
         return bool(
-            result.data[0].get("authorized")
+            result.data[0].get(
+                "authorized"
+            )
         )
 
     except Exception as e:
+
         logger.error(
             "Ошибка is_authorized: %s",
             e
@@ -214,17 +1137,35 @@ def is_authorized(telegram_id):
         return False
 
 
-def use_password(password, telegram_id):
-    password = password.strip().upper()
-    password_hash = hash_password(password)
+def use_password(
+    password,
+    telegram_id
+):
+
+    password = (
+        password
+        .strip()
+        .upper()
+    )
+
+    password_hash = hash_password(
+        password
+    )
 
     try:
+
         result = (
             supabase
             .table("bot_passwords")
             .select("*")
-            .eq("password_hash", password_hash)
-            .eq("used", False)
+            .eq(
+                "password_hash",
+                password_hash
+            )
+            .eq(
+                "used",
+                False
+            )
             .execute()
         )
 
@@ -232,6 +1173,7 @@ def use_password(password, telegram_id):
             return False
 
         password_row = result.data[0]
+
         password_id = password_row["id"]
 
         (
@@ -239,14 +1181,20 @@ def use_password(password, telegram_id):
             .table("bot_passwords")
             .update(
                 {
-                    "used": True,
-                    "used_by": telegram_id,
-                    "used_at": datetime.now(
-                        timezone.utc
-                    ).isoformat(),
+                    "used":
+                        True,
+                    "used_by":
+                        telegram_id,
+                    "used_at":
+                        datetime.now(
+                            timezone.utc
+                        ).isoformat(),
                 }
             )
-            .eq("id", password_id)
+            .eq(
+                "id",
+                password_id
+            )
             .execute()
         )
 
@@ -255,8 +1203,10 @@ def use_password(password, telegram_id):
             .table("bot_users")
             .upsert(
                 {
-                    "telegram_id": telegram_id,
-                    "authorized": True,
+                    "telegram_id":
+                        telegram_id,
+                    "authorized":
+                        True,
                 }
             )
             .execute()
@@ -265,6 +1215,7 @@ def use_password(password, telegram_id):
         return True
 
     except Exception as e:
+
         logger.error(
             "Ошибка use_password: %s",
             e
@@ -274,19 +1225,26 @@ def use_password(password, telegram_id):
 
 
 def make_password_list():
+
     try:
+
         result = (
             supabase
             .table("bot_passwords")
             .select("password_text")
-            .eq("used", False)
+            .eq(
+                "used",
+                False
+            )
             .order("id")
             .execute()
         )
 
         passwords = [
             row["password_text"]
-            for row in (result.data or [])
+            for row in (
+                result.data or []
+            )
         ]
 
         if not passwords:
@@ -298,6 +1256,7 @@ def make_password_list():
         )
 
     except Exception as e:
+
         logger.error(
             "Ошибка make_password_list: %s",
             e
@@ -307,6 +1266,7 @@ def make_password_list():
 
 
 def extract_room_name(text):
+
     text = text.strip()
 
     match = re.search(
@@ -327,197 +1287,77 @@ def extract_room_name(text):
     return None
 
 
-def get_skysmart_answers(room_name):
-    payload = {
-        "roomName": room_name
-    }
-
-    headers = {
-        "Content-Type": "application/json",
-        "Accept": "application/json",
-        "User-Agent": "Mozilla/5.0",
-    }
-
-    max_attempts = 3
-
-    for attempt in range(1, max_attempts + 1):
-        logger.info(
-            "Skysmart API: попытка %s/%s | room=%s",
-            attempt,
-            max_attempts,
-            room_name,
-        )
-
-        try:
-            response = requests.post(
-                SKYSMART_API_URL,
-                json=payload,
-                headers=headers,
-                timeout=60,
-            )
-
-            logger.info(
-                "Skysmart API: HTTP %s",
-                response.status_code,
-            )
-
-            if response.ok:
-                try:
-                    data = response.json()
-                except ValueError:
-                    logger.error(
-                        "API вернул не JSON: %s",
-                        response.text[:5000],
-                    )
-
-                    raise RuntimeError(
-                        "Skysmart API вернул некорректный JSON."
-                    )
-
-                logger.info(
-                    "Получен JSON от Skysmart API: %s",
-                    json.dumps(
-                        data,
-                        ensure_ascii=False
-                    )[:10000],
-                )
-
-                return data
-
-            if response.status_code in (
-                500,
-                502,
-                503,
-                504,
-            ):
-                logger.warning(
-                    "Skysmart API временно недоступен. HTTP %s",
-                    response.status_code,
-                )
-
-                logger.warning(
-                    "Ответ сервера: %s",
-                    response.text[:5000],
-                )
-
-                if attempt < max_attempts:
-                    wait_time = 2 ** attempt
-                    time.sleep(wait_time)
-                    continue
-
-                raise requests.HTTPError(
-                    f"Skysmart API HTTP "
-                    f"{response.status_code}: "
-                    f"{response.text[:5000]}"
-                )
-
-            logger.error(
-                "Skysmart API вернул HTTP %s: %s",
-                response.status_code,
-                response.text[:5000],
-            )
-
-            response.raise_for_status()
-
-        except requests.Timeout as e:
-            logger.warning(
-                "Timeout Skysmart API "
-                "(попытка %s/%s): %s",
-                attempt,
-                max_attempts,
-                e,
-            )
-
-            if attempt < max_attempts:
-                time.sleep(2 ** attempt)
-                continue
-
-            raise RuntimeError(
-                "Skysmart API не ответил за отведённое время."
-            )
-
-        except requests.ConnectionError as e:
-            logger.warning(
-                "Ошибка соединения с Skysmart API "
-                "(попытка %s/%s): %s",
-                attempt,
-                max_attempts,
-                e,
-            )
-
-            if attempt < max_attempts:
-                time.sleep(2 ** attempt)
-                continue
-
-            raise RuntimeError(
-                "Не удалось подключиться к Skysmart API."
-            )
-
-        except requests.HTTPError:
-            raise
-
-        except Exception as e:
-            logger.exception(
-                "Неожиданная ошибка при запросе к Skysmart API: %s",
-                e,
-            )
-
-            raise
-
-    raise RuntimeError(
-        "Не удалось получить ответ от Skysmart API."
-    )
-
-
 def build_all_tasks_answers(data):
+
     if not isinstance(data, list):
+
         raise ValueError(
-            "Ответ API должен быть списком."
+            "Ответ Skysmart должен "
+            "быть списком."
         )
 
     if len(data) == 0:
+
         raise ValueError(
-            "API вернул пустой список."
+            "Skysmart вернул пустой список."
         )
 
-    tasks = data[0]
+    all_tasks_answers = []
 
-    if not isinstance(tasks, list):
-        raise ValueError(
-            "data[0] должен содержать список заданий."
-        )
+    for task in data:
 
-    all_tasks_answers = [
-        []
-        for _ in range(len(tasks))
-    ]
-
-    for task in tasks:
-        if not isinstance(task, dict):
+        if not isinstance(
+            task,
+            dict
+        ):
             continue
 
-        task_number = task.get("task_number")
-        answers = task.get("answers", [])
+        task_number = task.get(
+            "task_number"
+        )
 
-        if not isinstance(task_number, int):
+        answers = task.get(
+            "answers",
+            []
+        )
+
+        if not isinstance(
+            task_number,
+            int
+        ):
             continue
 
         index = task_number - 1
 
-        if index < 0:
-            continue
+        while len(
+            all_tasks_answers
+        ) <= index:
 
-        while len(all_tasks_answers) <= index:
             all_tasks_answers.append([])
 
-        if isinstance(answers, list):
-            all_tasks_answers[index] = list(answers)
+        if isinstance(
+            answers,
+            list
+        ):
 
-        elif isinstance(answers, str):
-            all_tasks_answers[index] = [answers]
+            all_tasks_answers[
+                index
+            ] = list(answers)
+
+        elif isinstance(
+            answers,
+            str
+        ):
+
+            all_tasks_answers[
+                index
+            ] = [answers]
 
         else:
-            all_tasks_answers[index] = [answers]
+
+            all_tasks_answers[
+                index
+            ] = [answers]
 
     logger.info(
         "ALL_TASKS_ANSWERS = %s",
@@ -527,7 +1367,10 @@ def build_all_tasks_answers(data):
     return all_tasks_answers
 
 
-def format_all_tasks_answers(all_tasks_answers):
+def format_all_tasks_answers(
+    all_tasks_answers
+):
+
     return json.dumps(
         all_tasks_answers,
         ensure_ascii=False,
@@ -535,19 +1378,33 @@ def format_all_tasks_answers(all_tasks_answers):
     )
 
 
+# ============================================================
+# TELEGRAM HANDLERS
+# ============================================================
+
 async def start_command(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE
 ):
+
     if not update.effective_user:
         return
 
-    telegram_id = update.effective_user.id
+    telegram_id = (
+        update.effective_user.id
+    )
 
-    create_user_if_needed(telegram_id)
+    create_user_if_needed(
+        telegram_id
+    )
 
-    if is_authorized(telegram_id):
-        user_states[telegram_id] = "waiting_link"
+    if is_authorized(
+        telegram_id
+    ):
+
+        user_states[
+            telegram_id
+        ] = "waiting_link"
 
         await update.message.reply_text(
             "✅ Вы уже авторизованы.\n\n"
@@ -558,10 +1415,13 @@ async def start_command(
 
         return
 
-    user_states[telegram_id] = "waiting_password"
+    user_states[
+        telegram_id
+    ] = "waiting_password"
 
     await update.message.reply_text(
-        "🔐 Для использования бота введите пароль доступа.",
+        "🔐 Для использования бота "
+        "введите пароль доступа.",
         reply_markup=password_keyboard(),
     )
 
@@ -570,13 +1430,17 @@ async def id_command(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE
 ):
+
     if not update.effective_user:
         return
 
-    telegram_id = update.effective_user.id
+    telegram_id = (
+        update.effective_user.id
+    )
 
     await update.message.reply_text(
-        f"🆔 Ваш Telegram ID:\n\n{telegram_id}"
+        "🆔 Ваш Telegram ID:\n\n"
+        f"{telegram_id}"
     )
 
 
@@ -584,6 +1448,7 @@ async def keys_command(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE
 ):
+
     if not update.effective_user:
         return
 
@@ -591,7 +1456,10 @@ async def keys_command(
         update.effective_user.id
     )
 
-    if telegram_id != str(OWNER_ID):
+    if telegram_id != str(
+        OWNER_ID
+    ):
+
         await update.message.reply_text(
             "❌ У вас нет доступа."
         )
@@ -601,7 +1469,8 @@ async def keys_command(
     passwords = make_password_list()
 
     await update.message.reply_text(
-        "🔑 Свободные пароли:\n\n" + passwords
+        "🔑 Свободные пароли:\n\n"
+        + passwords
     )
 
 
@@ -609,19 +1478,27 @@ async def text_handler(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE
 ):
+
     if not update.effective_user:
         return
 
     if not update.message:
         return
 
-    telegram_id = update.effective_user.id
+    telegram_id = (
+        update.effective_user.id
+    )
 
     text = (
         update.message.text or ""
     ).strip()
 
+    # --------------------------------------------------------
+    # ID
+    # --------------------------------------------------------
+
     if text == "🆔 Мой ID":
+
         await id_command(
             update,
             context
@@ -629,8 +1506,15 @@ async def text_handler(
 
         return
 
+    # --------------------------------------------------------
+    # Получить ответы
+    # --------------------------------------------------------
+
     if text == "📚 Получить ответы":
-        user_states[telegram_id] = "waiting_link"
+
+        user_states[
+            telegram_id
+        ] = "waiting_link"
 
         await update.message.reply_text(
             "Отправьте ссылку на задание Skysmart."
@@ -638,29 +1522,50 @@ async def text_handler(
 
         return
 
-    if not is_authorized(telegram_id):
-        if user_states.get(telegram_id) == "waiting_password":
+    # --------------------------------------------------------
+    # Авторизация
+    # --------------------------------------------------------
+
+    if not is_authorized(
+        telegram_id
+    ):
+
+        if (
+            user_states.get(
+                telegram_id
+            )
+            == "waiting_password"
+        ):
+
             if use_password(
                 text,
                 telegram_id
             ):
-                user_states[telegram_id] = "waiting_link"
+
+                user_states[
+                    telegram_id
+                ] = "waiting_link"
 
                 await update.message.reply_text(
                     "✅ Пароль принят!\n\n"
-                    "Теперь отправьте ссылку на задание Skysmart.",
+                    "Теперь отправьте ссылку "
+                    "на задание Skysmart.",
                     reply_markup=main_keyboard(),
                 )
 
             else:
+
                 await update.message.reply_text(
-                    "❌ Неверный или уже использованный пароль.\n\n"
+                    "❌ Неверный или уже "
+                    "использованный пароль.\n\n"
                     "Попробуйте ещё раз."
                 )
 
             return
 
-        user_states[telegram_id] = "waiting_password"
+        user_states[
+            telegram_id
+        ] = "waiting_password"
 
         await update.message.reply_text(
             "🔐 Сначала введите пароль доступа."
@@ -668,9 +1573,16 @@ async def text_handler(
 
         return
 
-    room_name = extract_room_name(text)
+    # --------------------------------------------------------
+    # Получаем room
+    # --------------------------------------------------------
+
+    room_name = extract_room_name(
+        text
+    )
 
     if not room_name:
+
         await update.message.reply_text(
             "❌ Не удалось найти roomName.\n\n"
             "Отправьте ссылку вида:\n"
@@ -679,23 +1591,31 @@ async def text_handler(
 
         return
 
-    processing_message = await update.message.reply_text(
-        "⏳ Получаю задания и ответы с Skysmart...",
-        parse_mode=None,
+    processing_message = (
+        await update.message.reply_text(
+            "⏳ Получаю задания и ответы "
+            "с Skysmart...",
+            parse_mode=None,
+        )
     )
 
     try:
+
         data = await asyncio.to_thread(
             get_skysmart_answers,
             room_name
         )
 
-        all_tasks_answers = build_all_tasks_answers(
-            data
+        all_tasks_answers = (
+            build_all_tasks_answers(
+                data
+            )
         )
 
-        result_text = format_all_tasks_answers(
-            all_tasks_answers
+        result_text = (
+            format_all_tasks_answers(
+                all_tasks_answers
+            )
         )
 
         logger.info(
@@ -704,24 +1624,29 @@ async def text_handler(
         )
 
         try:
+
             await processing_message.delete()
+
         except Exception:
             pass
 
         max_length = 3900
 
         if len(result_text) <= max_length:
+
             await update.message.reply_text(
                 result_text,
                 parse_mode=None,
             )
 
         else:
+
             for i in range(
                 0,
                 len(result_text),
                 max_length
             ):
+
                 chunk = result_text[
                     i:i + max_length
                 ]
@@ -731,52 +1656,90 @@ async def text_handler(
                     parse_mode=None,
                 )
 
-    except requests.HTTPError as e:
-        logger.error(
-            "HTTP ошибка Skysmart API: %s",
-            e
-        )
-
-        try:
-            await processing_message.delete()
-        except Exception:
-            pass
-
-        await update.message.reply_text(
-            "❌ Skysmart API временно недоступен.\n\n"
-            "Попробуйте отправить ссылку ещё раз через некоторое время.",
-            parse_mode=None,
-        )
-
     except Exception as e:
+
         logger.exception(
-            "Ошибка обработки задания: %s",
+            "Ошибка обработки Skysmart: %s",
             e
         )
 
         try:
+
             await processing_message.delete()
+
         except Exception:
             pass
 
         await update.message.reply_text(
-            "❌ Произошла ошибка при получении ответов.\n\n"
+            "❌ Произошла ошибка "
+            "при получении заданий.\n\n"
             f"{str(e)[:1000]}",
             parse_mode=None,
         )
 
 
+# ============================================================
+# HTTP
+# ============================================================
+
 async def health(request):
+
     return JSONResponse(
-        {"status": "ok"}
+        {
+            "status": "ok"
+        }
     )
 
 
 async def root(request):
+
     return PlainTextResponse(
         "Bot is running."
     )
 
+
+async def telegram_webhook(
+    request: Request
+):
+
+    try:
+
+        data = await request.json()
+
+        update = Update.de_json(
+            data,
+            application.bot
+        )
+
+        await application.process_update(
+            update
+        )
+
+        return JSONResponse(
+            {
+                "ok": True
+            }
+        )
+
+    except Exception as e:
+
+        logger.exception(
+            "Ошибка webhook: %s",
+            e
+        )
+
+        return JSONResponse(
+            {
+                "ok": False,
+                "error": str(e),
+            },
+            status_code=500,
+        )
+
+
+# ============================================================
+# TELEGRAM APPLICATION
+# ============================================================
 
 application = (
     Application
@@ -816,39 +1779,12 @@ application.add_handler(
 )
 
 
-async def telegram_webhook(request: Request):
-    try:
-        data = await request.json()
-
-        update = Update.de_json(
-            data,
-            application.bot
-        )
-
-        await application.process_update(
-            update
-        )
-
-        return JSONResponse(
-            {"ok": True}
-        )
-
-    except Exception as e:
-        logger.exception(
-            "Ошибка webhook: %s",
-            e
-        )
-
-        return JSONResponse(
-            {
-                "ok": False,
-                "error": str(e),
-            },
-            status_code=500,
-        )
-
+# ============================================================
+# STARTUP / SHUTDOWN
+# ============================================================
 
 async def startup():
+
     initialize_passwords()
 
     await application.initialize()
@@ -875,9 +1811,15 @@ async def startup():
 
 
 async def shutdown():
+
     await application.stop()
+
     await application.shutdown()
 
+
+# ============================================================
+# STARLETTE
+# ============================================================
 
 app = Starlette(
     routes=[
@@ -897,12 +1839,21 @@ app = Starlette(
             methods=["POST"]
         ),
     ],
-    on_startup=[startup],
-    on_shutdown=[shutdown],
+    on_startup=[
+        startup
+    ],
+    on_shutdown=[
+        shutdown
+    ],
 )
 
 
+# ============================================================
+# RUN
+# ============================================================
+
 if __name__ == "__main__":
+
     uvicorn.run(
         app,
         host="0.0.0.0",
