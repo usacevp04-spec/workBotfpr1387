@@ -1,9 +1,7 @@
 python-telegram-bot==22.5
 starlette==0.47.3
 uvicorn==0.35.0
-supabase==2.18.1
 requests==2.32.5
-google-auth-oauthlib
-google-api-python-client
-google-auth
-openai
+aiohttp
+beautifulsoup4==4.12.3
+supabase
